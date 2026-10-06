@@ -1,8 +1,10 @@
+# xano-environment Specification
+
 ## Purpose
 
 Configurar o Xano CLI e a conexão com o workspace para que o código do backend possa ser baixado e versionado.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Xano CLI autenticado e vinculado a um workspace
 O ambiente SHALL ter o Xano CLI autenticado e com um workspace definido no perfil ativo.
