@@ -1,0 +1,12 @@
+{
+  "servers": {
+    "xano": {
+      "type": "stdio",
+      "command": "xano",
+      "args": ["mcp"],
+      "env": {
+        "XANO_PROFILE": "Fernando"
+      }
+    }
+  }
+}
