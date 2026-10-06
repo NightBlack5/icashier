@@ -1,0 +1,6 @@
+{
+  "python.defaultInterpreterPath": "${workspaceFolder}\\.venv-cashsave\\Scripts\\python.exe",
+  "terminal.integrated.env.windows": {
+    "PATH": "${workspaceFolder}\\.venv-cashsave\\Scripts;${env:PATH}"
+  }
+}

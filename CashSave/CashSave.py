@@ -2,25 +2,13 @@ import reflex as rx
 
 from .pages.assistente import assistente
 from .pages.apoiar import conteudo_apoiar
-from .pages.calendario import conteudo_calendario
+from .pages.calendario import calendario_page
 from .pages.financas import financas
+from .pages.landing import landing_page
 from .pages.sobre import conteudo_sobre
 from .pages.suporte import conteudo_suporte
-
-
-# ============================================================
-# DADOS DE EXEMPLO
-# Depois vamos substituir pelos dados vindos do Xano
-# ============================================================
-
-DADOS_GRAFICO = [
-    {"mes": "Mai", "receitas": 2000, "despesas": 200},
-    {"mes": "Jun", "receitas": 0, "despesas": 0},
-    {"mes": "Jul", "receitas": 800, "despesas": 100},
-    {"mes": "Ago", "receitas": 0, "despesas": 0},
-    {"mes": "Set", "receitas": 0, "despesas": 0},
-    {"mes": "Out", "receitas": 0, "despesas": 0},
-]
+from .pages.auth import auth_page
+from .state import AppState
 
 
 # ============================================================
@@ -28,10 +16,11 @@ DADOS_GRAFICO = [
 # ============================================================
 
 MENU = [
-    ("Visão Geral", "layout-dashboard", "/"),
+    ("Visão Geral", "layout-dashboard", "/app"),
     ("Assistente IA", "bot", "/assistente"),
     ("Finanças", "trending-up", "/financas"),
     ("Calendário", "calendar", "/calendario"),
+    ("Preferências", "settings", "/perfil"),
     ("Sobre", "info", "/sobre"),
     ("Suporte", "life-buoy", "/suporte"),
     ("Apoiar o CashSave", "heart", "/apoiar"),
@@ -150,13 +139,13 @@ def sidebar(rota_atual: str) -> rx.Component:
 
             rx.vstack(
                 rx.text(
-                    "Usuário",
+                    AppState.nome_usuario,
                     size="2",
                     weight="medium",
                 ),
 
                 rx.text(
-                    "usuario@exemplo.com",
+                    AppState.email_usuario,
                     size="1",
                     color_scheme="gray",
                 ),
@@ -168,6 +157,14 @@ def sidebar(rota_atual: str) -> rx.Component:
             align="center",
             spacing="3",
             padding="0.5em 0.8em",
+        ),
+
+        rx.button(
+            "Sair",
+            on_click=AppState.sair,
+            variant="soft",
+            color_scheme="gray",
+            width="100%",
         ),
 
         spacing="2",
@@ -281,7 +278,7 @@ def icone_colorido(
 
 def cartao_resumo(
     titulo: str,
-    valor: str,
+    valor: str | rx.Var[str],
     legenda: str,
     icone: str,
     cor: str,
@@ -411,7 +408,7 @@ def grafico_visao_geral() -> rx.Component:
 
                 rx.recharts.tooltip(),
 
-                data=DADOS_GRAFICO,
+                data=AppState.grafico_financeiro,
 
                 width="100%",
                 height=300,
@@ -466,42 +463,49 @@ def proximos_vencimentos() -> rx.Component:
                 align="start",
             ),
 
-            rx.center(
-
+            rx.cond(
+                AppState.contas_proximas.length() > 0,
                 rx.vstack(
-
-                    rx.center(
-
-                        rx.icon(
-                            tag="circle-check",
-                            size=28,
+                    rx.foreach(
+                        AppState.contas_proximas,
+                        lambda item: rx.hstack(
+                            rx.vstack(
+                                rx.text(item["descricao"], weight="medium"),
+                                rx.text(
+                                    item["data_vencimento"],
+                                    size="1",
+                                    color_scheme="gray",
+                                ),
+                                spacing="0",
+                                align="start",
+                            ),
+                            rx.spacer(),
+                            rx.text(item["valor_formatado"], size="2", weight="bold"),
+                            width="100%",
+                            padding_y="0.5em",
+                            border_bottom="1px solid var(--gray-5)",
                         ),
-
-                        width="64px",
-                        height="64px",
-
-                        border_radius="50%",
-
-                        background="var(--gray-4)",
                     ),
-
                     rx.text(
-                        "Nenhuma conta próxima",
-                        weight="medium",
+                        "Total pendente: " + AppState.proximo_vencimento_total,
+                        weight="bold",
+                        color="var(--orange-9)",
+                        margin_top="0.5em",
                     ),
-
-                    rx.text(
-                        "Você está em dia!",
-                        size="2",
-                        color_scheme="gray",
-                    ),
-
-                    align="center",
+                    width="100%",
                     spacing="2",
                 ),
-
-                width="100%",
-                padding_y="2em",
+                rx.center(
+                    rx.vstack(
+                        rx.icon(tag="circle-check", size=28),
+                        rx.text("Nenhuma conta próxima", weight="medium"),
+                        rx.text("Você está em dia!", size="2", color_scheme="gray"),
+                        align="center",
+                        spacing="2",
+                    ),
+                    width="100%",
+                    padding_y="2em",
+                ),
             ),
 
             spacing="4",
@@ -663,14 +667,17 @@ def banner_ia() -> rx.Component:
 # DASHBOARD
 # ============================================================
 
-def dashboard() -> rx.Component:
-
+def dashboard_conteudo() -> rx.Component:
     return page_layout(
 
         "/",
 
         cabecalho(
-            "Olá, Usuário! 👋",
+            rx.cond(
+                AppState.nome_usuario != "Minha conta",
+                "Olá, " + AppState.nome_usuario + "!",
+                "Olá!",
+            ),
             "Resumo das suas finanças",
         ),
 
@@ -679,7 +686,7 @@ def dashboard() -> rx.Component:
 
             cartao_resumo(
                 "Saldo do Mês",
-                "R$ 0,00",
+                AppState.saldo_total,
                 "Mês atual",
                 "wallet",
                 "green",
@@ -687,7 +694,7 @@ def dashboard() -> rx.Component:
 
             cartao_resumo(
                 "Receitas",
-                "R$ 0,00",
+                AppState.total_receitas,
                 "Este mês",
                 "trending-up",
                 "green",
@@ -695,7 +702,7 @@ def dashboard() -> rx.Component:
 
             cartao_resumo(
                 "Despesas",
-                "R$ 0,00",
+                AppState.total_despesas,
                 "Este mês",
                 "trending-down",
                 "red",
@@ -703,7 +710,7 @@ def dashboard() -> rx.Component:
 
             cartao_resumo(
                 "Contas a Pagar",
-                "0",
+                AppState.proximo_vencimento_total,
                 "Próximos 7 dias",
                 "calendar",
                 "orange",
@@ -788,6 +795,14 @@ def dashboard() -> rx.Component:
     )
 
 
+def dashboard() -> rx.Component:
+    return rx.cond(
+        AppState.autenticado,
+        dashboard_conteudo(),
+        auth_page(),
+    )
+
+
 # ============================================================
 # PÁGINAS DO MENU AINDA EM DESENVOLVIMENTO
 # ============================================================
@@ -807,9 +822,60 @@ def pagina_em_desenvolvimento(
 
 
 def calendario() -> rx.Component:
-    return page_layout(
-        "/calendario",
-        conteudo_calendario(),
+    return calendario_page()
+
+
+def perfil() -> rx.Component:
+    return rx.cond(
+        AppState.autenticado,
+        page_layout(
+            "/perfil",
+            cabecalho("Preferências", "Personalize sua conta CashSave."),
+            rx.card(
+                rx.vstack(
+                    rx.text("Moeda"),
+                    rx.select(
+                        ["BRL", "USD", "EUR"],
+                        value=AppState.moeda,
+                        on_change=AppState.set_moeda,
+                    ),
+                    rx.text("Localidade"),
+                    rx.select(
+                        ["pt-BR", "en-US", "es-ES"],
+                        value=AppState.localidade,
+                        on_change=AppState.set_localidade,
+                    ),
+                    rx.text("Fuso horário"),
+                    rx.input(
+                        value=AppState.fuso_horario,
+                        on_change=AppState.set_fuso_horario,
+                    ),
+                    rx.checkbox(
+                        "Lembretes de vencimento",
+                        checked=AppState.notificacoes_vencimento,
+                        on_change=AppState.set_notificacoes_vencimento,
+                    ),
+                    rx.checkbox(
+                        "Alertas de orçamento",
+                        checked=AppState.notificacoes_orcamento,
+                        on_change=AppState.set_notificacoes_orcamento,
+                    ),
+                    rx.button(
+                        "Salvar preferências",
+                        on_click=AppState.salvar_preferencias,
+                        color_scheme="green",
+                    ),
+                    rx.text(AppState.aviso, color_scheme="green"),
+                    rx.text(AppState.erro, color_scheme="red"),
+                    spacing="3",
+                    width="100%",
+                    align="start",
+                ),
+                width="100%",
+                max_width="640px",
+            ),
+        ),
+        auth_page(),
     )
 
 
@@ -841,27 +907,44 @@ def apoiar() -> rx.Component:
 app = rx.App()
 
 app.add_page(
-    dashboard,
+    landing_page,
     route="/",
+    title="CashSave | Organize seu dinheiro",
+)
+
+app.add_page(
+    dashboard,
+    route="/app",
     title="CashSave | Visão Geral",
+    on_load=AppState.carregar_dados,
 )
 
 app.add_page(
     assistente,
     route="/assistente",
     title="CashSave | Assistente IA",
+    on_load=AppState.carregar_conversas_assistente,
 )
 
 app.add_page(
     financas,
     route="/financas",
     title="CashSave | Finanças",
+    on_load=AppState.carregar_dados,
 )
 
 app.add_page(
     calendario,
     route="/calendario",
     title="CashSave | Calendário",
+    on_load=AppState.carregar_dados,
+)
+
+app.add_page(
+    perfil,
+    route="/perfil",
+    title="CashSave | Preferências",
+    on_load=AppState.carregar_dados,
 )
 
 app.add_page(

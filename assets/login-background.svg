@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1365 768" fill="none">
+  <defs>
+    <radialGradient id="topGlow" cx="0" cy="0" r="1" gradientTransform="matrix(280 280 -280 280 -62 -55)" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#00D69A" stop-opacity=".32"/>
+      <stop offset="1" stop-color="#00D69A" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="bar" x1="1225" x2="1225" y1="500" y2="768" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#00D69A" stop-opacity=".16"/>
+      <stop offset="1" stop-color="#00D69A" stop-opacity=".025"/>
+    </linearGradient>
+    <linearGradient id="trend" x1="918" x2="1323" y1="682" y2="432" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#008F6D" stop-opacity=".16"/>
+      <stop offset=".58" stop-color="#00B886" stop-opacity=".48"/>
+      <stop offset="1" stop-color="#00D69A" stop-opacity=".78"/>
+    </linearGradient>
+  </defs>
+  <circle cx="-62" cy="-55" r="222" fill="url(#topGlow)" stroke="#00D69A" stroke-opacity=".62" stroke-width="2"/>
+  <path d="M0 528c43-3 64 15 101 47 41 36 86 56 129 93 39 33 76 69 111 100" stroke="#00B886" stroke-opacity=".14" stroke-width="2"/>
+  <path d="M1365 263c-72 73-139 144-207 216" stroke="#00B886" stroke-opacity=".13" stroke-width="1.5"/>
+  <path d="M1124 612h49v156h-49zM1203 579h48v189h-48zM1281 504h48v264h-48z" fill="url(#bar)"/>
+  <path d="m916 682 126-64 54-34 47-50c3-3 8-3 11 0l34 34c3 3 8 3 11 0l93-91" stroke="url(#trend)" stroke-linecap="round" stroke-linejoin="round" stroke-width="3"/>
+  <path d="m1287 445 36-13-8 37M1287 445l29-2" stroke="#00D69A" stroke-linecap="round" stroke-linejoin="round" stroke-width="4"/>
+</svg>

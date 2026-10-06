@@ -3,6 +3,10 @@ from datetime import date
 
 import reflex as rx
 
+from ..state import AppState
+from .auth import auth_page
+from .financas import sidebar
+
 
 class CalendarioState(rx.State):
     mes: int = 10
@@ -305,42 +309,78 @@ def proximas_contas() -> rx.Component:
                 spacing="3",
                 align="center",
             ),
-
-            rx.center(
-                rx.vstack(
-                    rx.center(
-                        rx.icon(
-                            "calendar-days",
-                            size=42,
-                            color="var(--gray-9)",
-                        ),
-
-                        width="72px",
-                        height="72px",
-                    ),
-
-                    rx.text(
-                        "Nenhuma conta registrada",
-                        size="3",
-                        color_scheme="gray",
-                    ),
-
-                    rx.link(
-                        "Adicionar conta",
-                        href="/calendario",
-                        color="var(--green-9)",
-                        size="3",
-                        weight="medium",
-                    ),
-
-                    spacing="3",
-                    align="center",
-                ),
-
-                width="100%",
-                min_height="260px",
+            rx.input(
+                placeholder="Descrição da conta",
+                value=AppState.conta_descricao,
+                on_change=AppState.set_conta_descricao,
             ),
-
+            rx.input(
+                placeholder="Valor em reais",
+                type="number",
+                min="0.01",
+                step="0.01",
+                value=AppState.conta_valor,
+                on_change=AppState.set_conta_valor,
+            ),
+            rx.input(
+                type="date",
+                value=AppState.conta_vencimento,
+                on_change=AppState.set_conta_vencimento,
+            ),
+            rx.button(
+                "Adicionar conta a pagar",
+                on_click=AppState.criar_conta_a_pagar,
+                color_scheme="green",
+                width="100%",
+            ),
+            rx.cond(
+                AppState.contas_a_pagar.length() > 0,
+                rx.vstack(
+                    rx.foreach(
+                        AppState.contas_a_pagar,
+                        lambda item: rx.hstack(
+                            rx.vstack(
+                                rx.text(item["descricao"], weight="medium"),
+                                rx.text(
+                                    item["data_vencimento"],
+                                    " · ",
+                                    item["status"],
+                                    size="1",
+                                    color_scheme="gray",
+                                ),
+                                spacing="0",
+                                align="start",
+                            ),
+                            rx.spacer(),
+                            rx.text(item["valor_formatado"], weight="bold"),
+                            rx.cond(
+                                item["status"] == "pendente",
+                                rx.button(
+                                    "Pagar",
+                                    on_click=AppState.pagar_conta(item["id"]),
+                                    size="1",
+                                    color_scheme="green",
+                                ),
+                                rx.fragment(),
+                            ),
+                            rx.icon_button(
+                                rx.icon("trash-2", size=14),
+                                on_click=AppState.excluir_conta_a_pagar(item["id"]),
+                                variant="ghost",
+                                color_scheme="red",
+                                aria_label="Excluir conta",
+                            ),
+                            width="100%",
+                            align="center",
+                            padding_y="0.65em",
+                            border_bottom="1px solid var(--gray-5)",
+                        ),
+                    ),
+                    width="100%",
+                    spacing="0",
+                ),
+                rx.text("Nenhuma conta registrada.", color_scheme="gray"),
+            ),
             spacing="5",
             width="100%",
         ),
@@ -355,6 +395,11 @@ def proximas_contas() -> rx.Component:
 def conteudo_calendario() -> rx.Component:
     return rx.vstack(
         cabecalho_calendario(),
+        rx.cond(
+            AppState.erro != "",
+            rx.callout(AppState.erro, icon="triangle-alert", color_scheme="red"),
+            rx.fragment(),
+        ),
 
         rx.grid(
             calendario_mensal(),
@@ -368,4 +413,25 @@ def conteudo_calendario() -> rx.Component:
         spacing="5",
         align="start",
         width="100%",
+    )
+
+
+def calendario_page() -> rx.Component:
+    return rx.cond(
+        AppState.autenticado,
+        rx.hstack(
+            sidebar(),
+            rx.box(
+                conteudo_calendario(),
+                padding="2em",
+                width="100%",
+                min_width="0",
+            ),
+            width="100%",
+            min_height="100vh",
+            spacing="0",
+            align="start",
+            background="#0f0f0f",
+        ),
+        auth_page(),
     )

@@ -1,59 +1,7 @@
 import reflex as rx
 
-
-# ============================================================
-# ESTADO DO ASSISTENTE
-# ============================================================
-
-class AssistenteState(rx.State):
-    mensagens: list[dict[str, str]] = [
-        {
-            "tipo": "ia",
-            "texto": (
-                "Olá! 👋 Eu sou o assistente financeiro do CashSave. "
-                "Posso ajudar você a organizar suas finanças, analisar "
-                "seus gastos e planejar seu orçamento."
-            ),
-        }
-    ]
-
-    mensagem: str = ""
-
-    @rx.event
-    def atualizar_mensagem(self, texto: str):
-        self.mensagem = texto
-
-    @rx.event
-    def enviar_mensagem(self):
-        texto = self.mensagem.strip()
-
-        if not texto:
-            return
-
-        # Adiciona mensagem do usuário
-        self.mensagens.append(
-            {
-                "tipo": "usuario",
-                "texto": texto,
-            }
-        )
-
-        # Resposta provisória.
-        # Depois podemos trocar isso pela IA real.
-        resposta = (
-            "Entendi! 👍 Essa é uma resposta provisória do CashSave. "
-            "Quando conectarmos a IA, vou conseguir analisar seus dados "
-            "financeiros e responder de forma personalizada."
-        )
-
-        self.mensagens.append(
-            {
-                "tipo": "ia",
-                "texto": resposta,
-            }
-        )
-
-        self.mensagem = ""
+from ..state import AppState
+from .auth import auth_page
 
 
 # ============================================================
@@ -61,10 +9,11 @@ class AssistenteState(rx.State):
 # ============================================================
 
 MENU = [
-    ("Visão Geral", "layout-dashboard", "/"),
+    ("Visão Geral", "layout-dashboard", "/app"),
     ("Assistente IA", "bot", "/assistente"),
     ("Finanças", "trending-up", "/financas"),
     ("Calendário", "calendar", "/calendario"),
+    ("Preferências", "settings", "/perfil"),
     ("Sobre", "info", "/sobre"),
     ("Suporte", "life-buoy", "/suporte"),
     ("Apoiar o CashSave", "heart", "/apoiar"),
@@ -172,13 +121,13 @@ def sidebar() -> rx.Component:
 
             rx.vstack(
                 rx.text(
-                    "Usuário",
+                    AppState.nome_usuario,
                     size="2",
                     weight="medium",
                 ),
 
                 rx.text(
-                    "usuario@exemplo.com",
+                    AppState.email_usuario,
                     size="1",
                     color_scheme="gray",
                 ),
@@ -190,6 +139,14 @@ def sidebar() -> rx.Component:
             align="center",
             spacing="3",
             padding="0.5em 0.8em",
+        ),
+
+        rx.button(
+            "Sair",
+            on_click=AppState.sair,
+            variant="soft",
+            color_scheme="gray",
+            width="100%",
         ),
 
         spacing="2",
@@ -324,7 +281,11 @@ def chat() -> rx.Component:
                 rx.spacer(),
 
                 rx.badge(
-                    "Online",
+                    rx.cond(
+                        AppState.assistente_carregando,
+                        "Pensando...",
+                        "Online",
+                    ),
                     color_scheme="green",
                     variant="soft",
                 ),
@@ -340,7 +301,7 @@ def chat() -> rx.Component:
 
                 rx.vstack(
                     rx.foreach(
-                        AssistenteState.mensagens,
+                        AppState.assistente_mensagens,
                         mensagem_balao,
                     ),
 
@@ -355,17 +316,29 @@ def chat() -> rx.Component:
 
             rx.divider(),
 
+            rx.cond(
+                AppState.erro != "",
+                rx.callout(
+                    AppState.erro,
+                    icon="triangle-alert",
+                    color_scheme="red",
+                    width="100%",
+                ),
+                rx.fragment(),
+            ),
+
             # Campo de mensagem
             rx.hstack(
 
                 rx.input(
                     placeholder="Digite sua dúvida financeira...",
-                    value=AssistenteState.mensagem,
+                    value=AppState.assistente_mensagem,
 
-                    on_change=AssistenteState.atualizar_mensagem,
+                    on_change=AppState.set_assistente_mensagem,
 
                     size="3",
                     width="100%",
+                    disabled=AppState.assistente_carregando,
                 ),
 
                 rx.button(
@@ -374,10 +347,11 @@ def chat() -> rx.Component:
                         size=18,
                     ),
 
-                    on_click=AssistenteState.enviar_mensagem,
+                    on_click=AppState.enviar_mensagem_assistente,
 
                     size="3",
                     color_scheme="green",
+                    disabled=AppState.assistente_carregando,
                 ),
 
                 width="100%",
@@ -385,7 +359,7 @@ def chat() -> rx.Component:
             ),
 
             rx.text(
-                "O assistente ainda está em modo de demonstração.",
+                "O histórico desta conversa fica salvo na sua conta.",
                 size="1",
                 color_scheme="gray",
             ),
@@ -408,7 +382,6 @@ def dicas() -> rx.Component:
     return rx.card(
 
         rx.vstack(
-
             rx.heading(
                 "O que posso fazer?",
                 size="4",
@@ -420,10 +393,45 @@ def dicas() -> rx.Component:
                 color_scheme="gray",
             ),
 
+            rx.button(
+                rx.icon("plus", size=15),
+                "Nova conversa",
+                on_click=AppState.nova_conversa_assistente,
+                variant="outline",
+                width="100%",
+            ),
+            rx.cond(
+                AppState.assistente_conversas.length() > 0,
+                rx.vstack(
+                    rx.heading("Histórico", size="3"),
+                    rx.foreach(
+                        AppState.assistente_conversas,
+                        lambda item: rx.button(
+                            rx.cond(
+                                item["title"] != "",
+                                item["title"],
+                                "Conversa",
+                            ),
+                            on_click=AppState.abrir_conversa_assistente(item["id"]),
+                            variant="soft",
+                            width="100%",
+                            justify="start",
+                        ),
+                    ),
+                    width="100%",
+                    align="start",
+                    spacing="2",
+                ),
+                rx.fragment(),
+            ),
+
             rx.vstack(
 
                 rx.button(
                     "💰 Como economizar dinheiro?",
+                    on_click=AppState.set_assistente_mensagem(
+                        "Como posso economizar dinheiro?"
+                    ),
                     variant="soft",
                     width="100%",
                     justify="start",
@@ -431,6 +439,9 @@ def dicas() -> rx.Component:
 
                 rx.button(
                     "📊 Como organizar meu orçamento?",
+                    on_click=AppState.set_assistente_mensagem(
+                        "Como posso organizar meu orçamento?"
+                    ),
                     variant="soft",
                     width="100%",
                     justify="start",
@@ -438,6 +449,9 @@ def dicas() -> rx.Component:
 
                 rx.button(
                     "📈 Como controlar meus gastos?",
+                    on_click=AppState.set_assistente_mensagem(
+                        "Como posso controlar meus gastos?"
+                    ),
                     variant="soft",
                     width="100%",
                     justify="start",
@@ -445,6 +459,9 @@ def dicas() -> rx.Component:
 
                 rx.button(
                     "🎯 Como alcançar uma meta financeira?",
+                    on_click=AppState.set_assistente_mensagem(
+                        "Como posso alcançar minha meta financeira?"
+                    ),
                     variant="soft",
                     width="100%",
                     justify="start",
@@ -469,13 +486,15 @@ def dicas() -> rx.Component:
 
 def assistente() -> rx.Component:
 
-    return rx.hstack(
+    return rx.cond(
+        AppState.autenticado,
+        rx.hstack(
 
-        sidebar(),
+            sidebar(),
 
-        rx.box(
+            rx.box(
 
-            rx.vstack(
+                rx.vstack(
 
                 # Título
                 rx.vstack(
@@ -520,12 +539,14 @@ def assistente() -> rx.Component:
                 width="100%",
             ),
 
-            padding="2em",
-            width="100%",
-            min_width="0",
-        ),
+                padding="2em",
+                width="100%",
+                min_width="0",
+            ),
 
-        spacing="0",
-        align="start",
-        width="100%",
+            spacing="0",
+            align="start",
+            width="100%",
+        ),
+        auth_page(),
     )
