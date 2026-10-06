@@ -4,7 +4,7 @@
 - [x] 1. Instalar o Git e configurar nome e e-mail
 - [x] 2. Revisar e completar o `.gitignore`
 - [x] 3. Executar `git init` e o primeiro commit
-- [ ] 4. Criar o repositório no GitHub e enviar com `git push`
+- [x] 4. Criar o repositório no GitHub e enviar com `git push`
 
 ## Verificação
-- [ ] 1. Conferir `git status` e `git log`
+- [x] 1. Conferir `git status` e `git log`
