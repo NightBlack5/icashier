@@ -4,6 +4,7 @@ query "auth/signup" verb=POST {
   input {
     text name filters=trim
     email email filters=trim|lower
+    text phone filters=trim
     password password filters=min:8|minAlpha:1|minDigit:1
   }
 
@@ -27,6 +28,7 @@ query "auth/signup" verb=POST {
       data = {
         name: $input.name
         email: $input.email
+        phone: $input.phone
         password: $input.password
         role: "member"
       }

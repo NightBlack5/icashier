@@ -8,6 +8,7 @@ query "preferencias_usuario/me" verb=PATCH {
     text? fuso_horario?
     bool? notificacoes_vencimento?
     bool? notificacoes_orcamento?
+    bool? notificacoes_metas?
   }
 
   stack {
@@ -26,6 +27,7 @@ query "preferencias_usuario/me" verb=PATCH {
         fuso_horario: $input.fuso_horario ?? $atuais.fuso_horario ?? "America/Sao_Paulo"
         notificacoes_vencimento: $input.notificacoes_vencimento ?? $atuais.notificacoes_vencimento ?? true
         notificacoes_orcamento: $input.notificacoes_orcamento ?? $atuais.notificacoes_orcamento ?? true
+        notificacoes_metas: $input.notificacoes_metas ?? $atuais.notificacoes_metas ?? true
       }
     } as $preferencias
   }

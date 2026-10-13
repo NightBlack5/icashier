@@ -13,6 +13,7 @@ table preferencias_usuario {
     text fuso_horario?="America/Sao_Paulo"
     bool notificacoes_vencimento?=true
     bool notificacoes_orcamento?=true
+    bool notificacoes_metas?=true
     timestamp criado_em?=now
     timestamp atualizado_em?
   }

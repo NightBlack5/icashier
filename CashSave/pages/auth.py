@@ -15,8 +15,8 @@ def campo_email() -> rx.Component:
     return rx.hstack(
         rx.icon("mail", size=18, color="#91a6a8"),
         rx.input(
-            placeholder="E-mail ou número de telefone",
-            type="text",
+            placeholder="Seu e-mail",
+            type="email",
             value=rx.cond(
                 AppState.lembrar_email == "true",
                 AppState.auth_email_salvo,
@@ -47,7 +47,7 @@ def campo_email() -> rx.Component:
     )
 
 
-def campo_senha() -> rx.Component:
+def campo_senha(is_registration: bool = False) -> rx.Component:
     return rx.hstack(
         rx.icon("lock-keyhole", size=18, color="#91a6a8"),
         rx.input(
@@ -56,7 +56,7 @@ def campo_senha() -> rx.Component:
             value=AppState.auth_password,
             on_change=AppState.set_auth_password,
             required=True,
-            min_length=rx.cond(AppState.cadastro, 8, 1),
+            min_length=8 if is_registration else 1,
             variant="soft",
             background="transparent",
             border="none",
@@ -126,7 +126,96 @@ def campo_nome() -> rx.Component:
     )
 
 
-def auth_page() -> rx.Component:
+def campo_telefone() -> rx.Component:
+    return rx.hstack(
+        rx.icon("smartphone", size=18, color="#91a6a8"),
+        rx.input(
+            placeholder="Número de telefone",
+            type="tel",
+            value=AppState.auth_phone,
+            on_change=AppState.set_auth_phone,
+            required=True,
+            min_length=10,
+            variant="soft",
+            background="transparent",
+            border="none",
+            box_shadow="none",
+            color="white",
+            placeholder_color="#82999a",
+            width="100%",
+            height="44px",
+            padding="0",
+            _focus={"outline": "none", "box_shadow": "none"},
+        ),
+        align="center",
+        spacing="3",
+        width="100%",
+        padding_x="0.85em",
+        border=f"1px solid {FIELD_BORDER}",
+        border_radius="11px",
+        background=FIELD_BACKGROUND,
+        _focus_within={"border_color": GREEN},
+    )
+
+
+def campo_confirmacao_senha() -> rx.Component:
+    return rx.hstack(
+        rx.icon("lock-keyhole", size=18, color="#91a6a8"),
+        rx.input(
+            placeholder="Confirmar senha",
+            type=rx.cond(
+                AppState.senha_confirmacao_visivel,
+                "text",
+                "password",
+            ),
+            value=AppState.auth_password_confirmation,
+            on_change=AppState.set_auth_password_confirmation,
+            required=True,
+            min_length=8,
+            variant="soft",
+            background="transparent",
+            border="none",
+            box_shadow="none",
+            color="white",
+            placeholder_color="#82999a",
+            width="100%",
+            height="44px",
+            padding="0",
+            _focus={"outline": "none", "box_shadow": "none"},
+        ),
+        rx.icon_button(
+            rx.icon(
+                rx.cond(
+                    AppState.senha_confirmacao_visivel,
+                    "eye-off",
+                    "eye",
+                ),
+                size=18,
+                color="#91a6a8",
+            ),
+            on_click=AppState.alternar_visibilidade_confirmacao_senha,
+            variant="ghost",
+            size="1",
+            aria_label=rx.cond(
+                AppState.senha_confirmacao_visivel,
+                "Ocultar confirmação da senha",
+                "Mostrar confirmação da senha",
+            ),
+        ),
+        align="center",
+        spacing="3",
+        width="100%",
+        padding_left="0.85em",
+        padding_right="0.45em",
+        border=f"1px solid {FIELD_BORDER}",
+        border_radius="11px",
+        background=FIELD_BACKGROUND,
+        transition="border-color 150ms ease",
+        _focus_within={"border_color": GREEN},
+    )
+
+
+def auth_page(is_registration: bool = False) -> rx.Component:
     return rx.box(
         rx.image(
             src="/login-background.svg",
@@ -162,19 +251,19 @@ def auth_page() -> rx.Component:
                 ),
                 rx.vstack(
                     rx.heading(
-                        rx.cond(
-                            AppState.cadastro,
-                            "Crie sua conta",
-                            "Bem-vindo de volta!",
-                        ),
+                        "Crie sua conta"
+                        if is_registration
+                        else "Bem-vindo de volta!",
                         size="5",
                         color="white",
                     ),
                     rx.text(
-                        rx.cond(
-                            AppState.cadastro,
-                            "Cadastre-se para começar a cuidar melhor do seu dinheiro.",
-                            "Entre para acessar sua conta e continuar cuidando do seu dinheiro.",
+                        (
+                            "É rápido e gratuito. Comece agora a cuidar "
+                            "do seu dinheiro."
+                            if is_registration
+                            else "Entre para acessar sua conta e continuar "
+                            "cuidando do seu dinheiro."
                         ),
                         size="2",
                         line_height="1.55",
@@ -185,151 +274,151 @@ def auth_page() -> rx.Component:
                     width="100%",
                     margin_top="28px",
                 ),
-                rx.vstack(
-                    rx.cond(AppState.cadastro, campo_nome(), rx.fragment()),
-                    campo_email(),
-                    campo_senha(),
-                    rx.cond(
-                        AppState.cadastro,
-                        rx.fragment(),
-                        rx.hstack(
-                            rx.checkbox(
-                                "Lembrar de mim",
-                                checked=AppState.lembrar_email == "true",
-                                on_change=AppState.set_lembrar_email,
-                                size="1",
-                                color_scheme="green",
+                rx.form(
+                    rx.vstack(
+                        campo_nome() if is_registration else rx.fragment(),
+                        campo_email(),
+                        campo_telefone() if is_registration else rx.fragment(),
+                        campo_senha(is_registration),
+                        (
+                            campo_confirmacao_senha(),
+                            rx.hstack(
+                                rx.input(
+                                    type="checkbox",
+                                    checked=AppState.aceitou_termos,
+                                    on_change=AppState.set_aceitou_termos,
+                                    width="16px",
+                                    height="16px",
+                                    margin="0",
+                                    accent_color=GREEN,
+                                    cursor="pointer",
+                                    pointer_events="auto",
+                                ),
+                                rx.text(
+                                    "Concordo com o uso dos meus dados para "
+                                    "criar e proteger minha conta.",
+                                    size="1",
+                                    color=MUTED,
+                                    pointer_events="none",
+                                ),
+                                align="center",
+                                spacing="2",
+                                width="100%",
+                                pointer_events="auto",
+                                position="relative",
+                                z_index="1",
+                            ),
+                        )
+                        if is_registration
+                        else rx.hstack(
+                            rx.hstack(
+                                rx.input(
+                                    type="checkbox",
+                                    checked=AppState.lembrar_email == "true",
+                                    on_change=AppState.set_lembrar_email,
+                                    width="16px",
+                                    height="16px",
+                                    margin="0",
+                                    accent_color=GREEN,
+                                    cursor="pointer",
+                                    pointer_events="auto",
+                                ),
+                                rx.text(
+                                    "Lembrar de mim",
+                                    size="1",
+                                    color=MUTED,
+                                    pointer_events="none",
+                                ),
+                                align="center",
+                                spacing="2",
+                                pointer_events="auto",
+                                position="relative",
+                                z_index="1",
                             ),
                             rx.spacer(),
                             rx.link(
-                                "Esqueceu sua senha?",
+                                "Precisa de ajuda?",
                                 href="/suporte",
                                 size="1",
                                 color=GREEN,
                                 text_decoration="none",
                                 _hover={"color": "#70f5c5"},
+                                pointer_events="auto",
                             ),
                             width="100%",
                             align="center",
+                            pointer_events="auto",
+                            position="relative",
+                            z_index="1",
                         ),
-                    ),
-                    spacing="2",
-                    width="100%",
-                    margin_top="8px",
-                ),
-                rx.box(
-                    rx.cond(
-                        AppState.erro != "",
-                        rx.callout(
-                            AppState.erro,
-                            icon="triangle-alert",
-                            color_scheme="red",
-                            width="100%",
-                            background="rgba(127, 29, 29, 0.2)",
-                        ),
-                        rx.fragment(),
-                    ),
-                    margin_top="12px",
-                ),
-                rx.button(
-                    rx.cond(
-                        AppState.carregando,
-                        "Aguarde...",
-                        rx.cond(AppState.cadastro, "Criar conta", "Entrar"),
-                    ),
-                    rx.cond(
-                        AppState.carregando,
-                        rx.spinner(size="1"),
-                        rx.icon("arrow-right", size=17),
-                    ),
-                    on_click=AppState.autenticar,
-                    type="submit",
-                    disabled=AppState.carregando,
-                    width="100%",
-                    height="40px",
-                    color="#032019",
-                    weight="bold",
-                    background=GREEN,
-                    border_radius="999px",
-                    _hover={
-                        "background": "#39f0b2",
-                        "transform": "translateY(-1px)",
-                    },
-                    transition="all 150ms ease",
-                    margin_top="9px",
-                ),
-                rx.hstack(
-                    rx.box(
-                        width="100%",
-                        height="1px",
-                        background="#294044",
-                    ),
-                    rx.text("ou", size="1", color=MUTED, white_space="nowrap"),
-                    rx.box(
-                        width="100%",
-                        height="1px",
-                        background="#294044",
-                    ),
-                    spacing="3",
-                    align="center",
-                    width="100%",
-                    margin_top="20px",
-                ),
-                rx.cond(
-                    AppState.cadastro,
-                    rx.fragment(),
-                    rx.button(
-                        rx.text(
-                            "G",
-                            color="transparent",
-                            font_size="20px",
-                            font_weight="bold",
-                            background_image=(
-                                "linear-gradient(135deg, #4285F4 0 25%, "
-                                "#34A853 25% 50%, #FBBC05 50% 75%, "
-                                "#EA4335 75%)"
+                        rx.box(
+                            rx.cond(
+                                AppState.erro != "",
+                                rx.callout(
+                                    AppState.erro,
+                                    icon="triangle-alert",
+                                    color_scheme="red",
+                                    width="100%",
+                                    background="rgba(127, 29, 29, 0.2)",
+                                ),
+                                rx.fragment(),
                             ),
-                            background_clip="text",
+                            width="100%",
+                            margin_top="12px",
                         ),
-                        "Entrar com o Google",
-                        on_click=AppState.login_google,
-                        variant="outline",
+                        rx.button(
+                            rx.cond(
+                                AppState.carregando,
+                                "Aguarde...",
+                                "Criar conta" if is_registration else "Entrar",
+                            ),
+                            rx.cond(
+                                AppState.carregando,
+                                rx.spinner(size="1"),
+                                rx.icon("arrow-right", size=17),
+                            ),
+                            type="submit",
+                            disabled=AppState.carregando,
+                            width="100%",
+                            height="40px",
+                            color="#032019",
+                            weight="bold",
+                            background=GREEN,
+                            border_radius="999px",
+                            _hover={
+                                "background": "#39f0b2",
+                                "transform": "translateY(-1px)",
+                            },
+                            transition="all 150ms ease",
+                            margin_top="9px",
+                        ),
+                        spacing="2",
                         width="100%",
-                        height="40px",
-                        color="white",
-                        border="1px solid #294044",
-                        border_radius="999px",
-                        background="transparent",
-                        _hover={
-                            "background": "rgba(255, 255, 255, 0.04)",
-                            "border_color": "#496366",
-                        },
-                        margin_top="12px",
+                        margin_top="8px",
                     ),
+                    on_submit=AppState.autenticar,
+                    width="100%",
                 ),
                 rx.hstack(
                     rx.text(
-                        rx.cond(
-                            AppState.cadastro,
-                            "Já tem uma conta?",
-                            "Não tem uma conta?",
-                        ),
+                        "Já tem uma conta?"
+                        if is_registration
+                        else "Não tem uma conta?",
                         size="2",
                         color=MUTED,
                     ),
-                    rx.button(
-                        rx.cond(
-                            AppState.cadastro,
-                            "Entrar",
-                            "Cadastre-se",
+                    rx.link(
+                        "Entrar" if is_registration else "Cadastre-se",
+                        href="/login" if is_registration else "/cadastro",
+                        on_click=(
+                            AppState.preparar_login
+                            if is_registration
+                            else AppState.preparar_cadastro
                         ),
-                        on_click=AppState.alternar_cadastro,
-                        variant="ghost",
                         size="2",
                         color=GREEN,
-                        padding="0",
-                        min_width="0",
-                        _hover={"background": "transparent", "color": "#70f5c5"},
+                        text_decoration="none",
+                        _hover={"color": "#70f5c5"},
                     ),
                     spacing="1",
                     justify="center",
@@ -338,8 +427,8 @@ def auth_page() -> rx.Component:
                     margin_top="32px",
                 ),
                 width="100%",
-                max_width="400px",
-                min_height="560px",
+                max_width="460px" if is_registration else "400px",
+                min_height="660px" if is_registration else "560px",
                 padding=rx.breakpoints(
                     initial="24px 24px 28px",
                     sm="40px 32px 22px",
@@ -369,3 +458,11 @@ def auth_page() -> rx.Component:
             f"{BACKGROUND}"
         ),
     )
+
+
+def login_page() -> rx.Component:
+    return auth_page()
+
+
+def cadastro_page() -> rx.Component:
+    return auth_page(is_registration=True)

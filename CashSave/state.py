@@ -1,20 +1,30 @@
 import asyncio
+import calendar
+import csv
+import io
 import json
+import mimetypes
 import os
+import secrets
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from pathlib import Path
 from urllib.parse import urlsplit
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 import reflex as rx
+from dotenv import load_dotenv
 
 
+load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 API_BASE_URL = os.getenv("CASH_SAVE_API_URL", "").rstrip("/")
 
 
 class XanoAPIError(Exception):
-    pass
+    def __init__(self, message: str, status_code: int | None = None):
+        super().__init__(message)
+        self.status_code = status_code
 
 
 def _send_request(
@@ -22,6 +32,7 @@ def _send_request(
     path: str,
     payload: dict | None,
     token: str = "",
+    upload: tuple[str, str, bytes] | None = None,
 ) -> object:
     if not API_BASE_URL:
         raise XanoAPIError(
@@ -36,10 +47,24 @@ def _send_request(
             "CASH_SAVE_API_URL deve usar HTTPS e apontar para o grupo de APIs do Xano."
         )
 
-    body = None if payload is None else json.dumps(payload).encode("utf-8")
+    content_type = "application/json"
+    if upload is not None:
+        field_name, filename, file_data = upload
+        boundary = secrets.token_hex(16)
+        safe_filename = os.path.basename(filename).replace('"', "")
+        media_type = mimetypes.guess_type(safe_filename)[0] or "application/octet-stream"
+        body = (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="{field_name}"; '
+            f'filename="{safe_filename}"\r\n'
+            f"Content-Type: {media_type}\r\n\r\n"
+        ).encode("utf-8") + file_data + f"\r\n--{boundary}--\r\n".encode("utf-8")
+        content_type = f"multipart/form-data; boundary={boundary}"
+    else:
+        body = None if payload is None else json.dumps(payload).encode("utf-8")
     headers = {"Accept": "application/json"}
     if body is not None:
-        headers["Content-Type"] = "application/json"
+        headers["Content-Type"] = content_type
     if token:
         headers["Authorization"] = f"Bearer {token}"
 
@@ -63,7 +88,7 @@ def _send_request(
             or detail.get("error")
             or f"Xano respondeu com HTTP {error.code}."
         )
-        raise XanoAPIError(str(message)) from error
+        raise XanoAPIError(str(message), status_code=error.code) from error
     except (TimeoutError, URLError) as error:
         raise XanoAPIError(
             "Não foi possível conectar ao Xano. Verifique a URL e sua conexão."
@@ -124,8 +149,11 @@ def _records_with_money(
 
 
 def _money_to_cents(value: str) -> int:
+    normalized_value = value.replace("R$", "").replace(" ", "").strip()
+    if "," in normalized_value:
+        normalized_value = normalized_value.replace(".", "").replace(",", ".")
     try:
-        amount = Decimal(value.replace(",", ".").strip())
+        amount = Decimal(normalized_value)
     except InvalidOperation as error:
         raise XanoAPIError("Informe um valor monetário válido.") from error
     if not amount.is_finite() or amount <= 0:
@@ -133,6 +161,97 @@ def _money_to_cents(value: str) -> int:
     return int(
         (amount * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
     )
+
+
+def _formatar_entrada_reais(value: str) -> str:
+    centavos = _money_to_cents(value)
+    valor = Decimal(centavos) / 100
+    return (
+        f"{valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    )
+
+
+def _formatar_telefone(value: str) -> str:
+    digits = "".join(char for char in value if char.isdigit())
+    if digits.startswith("55") and len(digits) in {12, 13}:
+        digits = digits[2:]
+    digits = digits[:11]
+    if len(digits) < 2:
+        return f"({digits}" if digits else ""
+    if len(digits) == 2:
+        return f"({digits})"
+
+    ddd = digits[:2]
+    local = digits[2:]
+    if len(digits) <= 10:
+        if len(local) <= 4:
+            return f"({ddd}) {local}"
+        return f"({ddd}) {local[:4]}-{local[4:]}"
+
+    if len(local) <= 5:
+        return f"({ddd}) {local}"
+    return f"({ddd}) {local[:5]}-{local[5:]}"
+
+
+def _proxima_data_recorrente(
+    data: str,
+    frequencia: str,
+    dia_referencia: int | None = None,
+    mes_referencia: int | None = None,
+) -> str:
+    try:
+        data_atual = date.fromisoformat(data[:10])
+    except ValueError as error:
+        raise XanoAPIError("A recorrência contém uma data inválida.") from error
+    if frequencia == "diaria":
+        proxima = data_atual + timedelta(days=1)
+    elif frequencia == "semanal":
+        proxima = data_atual + timedelta(weeks=1)
+    elif frequencia == "mensal":
+        indice = data_atual.year * 12 + data_atual.month
+        ano, mes_zero = divmod(indice, 12)
+        mes = mes_zero + 1
+        proxima = data_atual.replace(
+            year=ano,
+            month=mes,
+            day=min(
+                dia_referencia or data_atual.day,
+                calendar.monthrange(ano, mes)[1],
+            ),
+        )
+    elif frequencia == "anual":
+        ano = data_atual.year + 1
+        mes = mes_referencia or data_atual.month
+        dia = dia_referencia or data_atual.day
+        proxima = date(
+            ano,
+            mes,
+            min(dia, calendar.monthrange(ano, mes)[1]),
+        )
+    else:
+        raise XanoAPIError("A frequência da recorrência é inválida.")
+    return proxima.isoformat()
+
+
+def _imagem_corresponde_ao_tipo(data: bytes, media_type: str) -> bool:
+    if media_type == "image/png":
+        return data.startswith(b"\x89PNG\r\n\x1a\n")
+    if media_type == "image/jpeg":
+        return data.startswith(b"\xff\xd8\xff")
+    if media_type == "image/webp":
+        return (
+            len(data) >= 12
+            and data[:4] == b"RIFF"
+            and data[8:12] == b"WEBP"
+        )
+    return False
+
+
+def _csv_safe_text(value: object) -> str:
+    text = str(value or "")
+    if text.lstrip(" \t\r\n").startswith(("=", "+", "-", "@")):
+        return "'" + text
+    return text
 
 
 class AppState(rx.State):
@@ -144,18 +263,24 @@ class AppState(rx.State):
         secure=os.getenv("CASH_SAVE_COOKIE_SECURE", "true").lower() == "true",
     )
     usuario: dict[str, str] = {}
+    avatar_url: str = ""
+    avatar_perfil_disponivel: bool = False
     auth_email: str = ""
     auth_email_salvo: str = rx.LocalStorage(
         "",
         name="cashsave_remembered_email",
     )
+    auth_phone: str = ""
     lembrar_email: str = rx.LocalStorage(
         "true",
         name="cashsave_remember_email",
     )
     auth_password: str = ""
+    auth_password_confirmation: str = ""
     auth_name: str = ""
     senha_visivel: bool = False
+    senha_confirmacao_visivel: bool = False
+    aceitou_termos: bool = False
     cadastro: bool = False
     erro: str = ""
     aviso: str = ""
@@ -191,11 +316,31 @@ class AppState(rx.State):
     meta_nome: str = ""
     meta_objetivo: str = ""
     meta_data_alvo: str = ""
+    meta_contribuicao: str = ""
+    recorrencias: list[dict] = []
+    recorrencia_descricao: str = ""
+    recorrencia_valor: str = ""
+    recorrencia_tipo: str = "despesa"
+    recorrencia_frequencia: str = "mensal"
+    recorrencia_proxima_data: str = date.today().isoformat()
+    recorrencias_disponiveis: bool = False
     moeda: str = "BRL"
     localidade: str = "pt-BR"
     fuso_horario: str = "America/Sao_Paulo"
     notificacoes_vencimento: bool = True
     notificacoes_orcamento: bool = True
+    notificacoes_metas: bool = True
+    notificacoes_metas_disponivel: bool = False
+    dados_carregados: bool = False
+    transacao_busca: str = ""
+    transacao_filtro_tipo: str = "todas"
+    transacao_filtro_periodo: str = "todas"
+    transacao_filtro_categoria: str = "todas"
+    transacao_filtro_conta: str = "todas"
+    notificacoes_descartadas: list[str] = rx.LocalStorage(
+        [],
+        name="cashsave_dismissed_notifications",
+    )
     assistente_conversas: list[dict] = []
     assistente_conversa_id: int = 0
     assistente_mensagens: list[dict[str, str]] = [
@@ -283,6 +428,270 @@ class AppState(rx.State):
         ][:5]
 
     @rx.var
+    def transacoes_filtradas(self) -> list[dict]:
+        hoje = date.today()
+        limite = hoje - timedelta(days=90)
+        busca = self.transacao_busca.strip().casefold()
+        resultado = []
+        for transacao in self.transacoes:
+            if (
+                self.transacao_filtro_tipo != "todas"
+                and transacao.get("tipo") != self.transacao_filtro_tipo
+            ):
+                continue
+            if self.transacao_filtro_categoria != "todas":
+                categoria = next(
+                    (
+                        item
+                        for item in self.categorias
+                        if str(item.get("id"))
+                        == str(transacao.get("categoria_id"))
+                    ),
+                    {},
+                )
+                if categoria.get("nome") != self.transacao_filtro_categoria:
+                    continue
+            if self.transacao_filtro_conta != "todas":
+                conta = next(
+                    (
+                        item
+                        for item in self.contas
+                        if str(item.get("id")) == str(transacao.get("conta_id"))
+                    ),
+                    {},
+                )
+                if conta.get("nome") != self.transacao_filtro_conta:
+                    continue
+            data_transacao = str(transacao.get("data", ""))[:10]
+            if self.transacao_filtro_periodo == "este mes":
+                if data_transacao[:7] != hoje.strftime("%Y-%m"):
+                    continue
+            elif self.transacao_filtro_periodo == "ultimos 3 meses":
+                if data_transacao < limite.isoformat():
+                    continue
+            if busca and busca not in str(transacao.get("descricao", "")).casefold():
+                continue
+            resultado.append(transacao)
+        return resultado
+
+    @rx.var
+    def opcoes_filtro_categoria(self) -> list[str]:
+        return [
+            "todas",
+            *sorted({
+                str(item.get("nome", ""))
+                for item in self.categorias
+                if item.get("nome")
+            }),
+        ]
+
+    @rx.var
+    def opcoes_filtro_conta(self) -> list[str]:
+        return [
+            "todas",
+            *sorted({
+                str(item.get("nome", ""))
+                for item in self.contas
+                if item.get("nome")
+            }),
+        ]
+
+    @rx.var
+    def notificacoes_ativas(self) -> list[dict[str, str]]:
+        hoje = date.today()
+        limite = hoje + timedelta(days=7)
+        notificacoes: list[dict[str, str]] = []
+        for conta in self.contas_a_pagar:
+            if not self.notificacoes_vencimento or conta.get("status") != "pendente":
+                continue
+            vencimento = str(conta.get("data_vencimento", ""))[:10]
+            if hoje.isoformat() <= vencimento <= limite.isoformat():
+                chave = (
+                    f"user-{self.usuario.get('id', '')}-"
+                    f"vencimento-{conta.get('id')}"
+                )
+                if chave not in self.notificacoes_descartadas:
+                    notificacoes.append({
+                        "id": chave,
+                        "titulo": "Conta próxima do vencimento",
+                        "mensagem": (
+                            f"{conta.get('descricao', 'Conta')} vence em "
+                            f"{vencimento} ({conta.get('valor_formatado', '')})."
+                        ),
+                    })
+
+        if self.notificacoes_orcamento:
+            hoje_iso = hoje.isoformat()
+            for orcamento in self.orcamentos:
+                if not orcamento.get("ativo", True):
+                    continue
+                inicio = str(orcamento.get("data_inicio", ""))[:10]
+                fim = str(orcamento.get("data_fim", ""))[:10]
+                if inicio and fim and not inicio <= hoje_iso <= fim:
+                    continue
+                categoria_id = orcamento.get("categoria_id")
+                gastos = sum(
+                    int(item.get("valor_centavos", 0) or 0)
+                    for item in self.transacoes
+                    if item.get("tipo") == "despesa"
+                    and inicio <= str(item.get("data", ""))[:10] <= fim
+                    and (
+                        categoria_id is None
+                        or str(item.get("categoria_id")) == str(categoria_id)
+                    )
+                )
+                limite_centavos = int(orcamento.get("limite_centavos", 0) or 0)
+                if limite_centavos <= 0 or gastos < limite_centavos * 0.8:
+                    continue
+                chave = (
+                    f"user-{self.usuario.get('id', '')}-"
+                    f"orcamento-{orcamento.get('id')}-{hoje:%Y-%m}"
+                )
+                if chave in self.notificacoes_descartadas:
+                    continue
+                percentual = int(gastos * 100 / limite_centavos)
+                notificacoes.append({
+                    "id": chave,
+                    "titulo": "Atenção ao orçamento",
+                    "mensagem": (
+                        f"{orcamento.get('nome', 'Seu orçamento')} já usou "
+                        f"{percentual}% do limite."
+                    ),
+                })
+
+        if self.notificacoes_metas:
+            for meta in self.metas:
+                if meta.get("status", "ativa") != "ativa":
+                    continue
+                data_alvo = str(meta.get("data_alvo", ""))[:10]
+                if not data_alvo or not hoje.isoformat() <= data_alvo <= (
+                    hoje + timedelta(days=30)
+                ).isoformat():
+                    continue
+                atual = int(meta.get("valor_atual_centavos", 0) or 0)
+                objetivo = int(meta.get("valor_objetivo_centavos", 0) or 0)
+                if objetivo <= 0 or atual >= objetivo:
+                    continue
+                chave = (
+                    f"user-{self.usuario.get('id', '')}-meta-{meta.get('id')}"
+                )
+                if chave in self.notificacoes_descartadas:
+                    continue
+                notificacoes.append({
+                    "id": chave,
+                    "titulo": "Prazo da meta se aproximando",
+                    "mensagem": (
+                        f"{meta.get('nome', 'Sua meta')} tem prazo em {data_alvo}."
+                    ),
+                })
+        return notificacoes
+
+    @rx.var
+    def sugestoes_financeiras(self) -> list[dict[str, str]]:
+        sugestoes: list[dict[str, str]] = []
+        hoje = date.today()
+        este_mes = hoje.strftime("%Y-%m")
+        inicio_mes_anterior = (
+            date(hoje.year - 1, 12, 1)
+            if hoje.month == 1
+            else date(hoje.year, hoje.month - 1, 1)
+        )
+        ultimo_dia_mes_anterior = calendar.monthrange(
+            inicio_mes_anterior.year,
+            inicio_mes_anterior.month,
+        )[1]
+        limite_mes_anterior = inicio_mes_anterior.replace(
+            day=min(hoje.day, ultimo_dia_mes_anterior)
+        )
+        gasto_atual = sum(
+            int(item.get("valor_centavos", 0) or 0)
+            for item in self.transacoes
+            if item.get("tipo") == "despesa"
+            and str(item.get("data", ""))[:7] == este_mes
+            and str(item.get("data", ""))[:10] <= hoje.isoformat()
+        )
+        gasto_anterior = sum(
+            int(item.get("valor_centavos", 0) or 0)
+            for item in self.transacoes
+            if item.get("tipo") == "despesa"
+            and str(item.get("data", ""))[:7]
+            == inicio_mes_anterior.strftime("%Y-%m")
+            and str(item.get("data", ""))[:10]
+            <= limite_mes_anterior.isoformat()
+        )
+        if gasto_anterior and gasto_atual > gasto_anterior * 1.2:
+            sugestoes.append({
+                "titulo": "Seus gastos aumentaram",
+                "mensagem": (
+                    f"Neste mês você já gastou "
+                    f"{_formatar_centavos(gasto_atual - gasto_anterior)} a mais "
+                    "que no mesmo período do mês passado. Confira suas "
+                    "despesas recentes."
+                ),
+            })
+        elif not self.transacoes:
+            sugestoes.append({
+                "titulo": "Comece pelo registro das despesas",
+                "mensagem": (
+                    "Registre algumas receitas e despesas para receber sugestões "
+                    "personalizadas e acompanhar seu orçamento."
+                ),
+            })
+        for meta in self.metas:
+            if meta.get("status", "ativa") != "ativa":
+                continue
+            atual = int(meta.get("valor_atual_centavos", 0) or 0)
+            objetivo = int(meta.get("valor_objetivo_centavos", 0) or 0)
+            if objetivo > 0 and atual < objetivo * 0.25:
+                sugestoes.append({
+                    "titulo": f"Avance na meta {meta.get('nome', '')}",
+                    "mensagem": (
+                        f"Faltam {_formatar_centavos(objetivo - atual)} para "
+                        "alcançar essa meta. Considere definir um valor mensal."
+                    ),
+                })
+        return sugestoes[:4]
+
+    @rx.var
+    def metas_com_progresso(self) -> list[dict]:
+        metas = []
+        hoje = date.today()
+        for meta in self.metas:
+            objetivo = int(meta.get("valor_objetivo_centavos", 0) or 0)
+            atual = int(meta.get("valor_atual_centavos", 0) or 0)
+            restante = max(objetivo - atual, 0)
+            data_alvo = str(meta.get("data_alvo", ""))[:10]
+            mensal_necessario = ""
+            if data_alvo:
+                try:
+                    prazo = date.fromisoformat(data_alvo)
+                except ValueError:
+                    prazo = hoje
+                if prazo >= hoje and restante:
+                    meses = (
+                        (prazo.year - hoje.year) * 12
+                        + prazo.month
+                        - hoje.month
+                        + (1 if prazo.day > hoje.day else 0)
+                    )
+                    meses = max(meses, 1)
+                    mensal_necessario = _formatar_centavos(
+                        (restante + meses - 1) // meses
+                    )
+            metas.append({
+                **meta,
+                "progresso_percentual": min(
+                    100,
+                    int(atual * 100 / objetivo) if objetivo else 0,
+                ),
+                "atual_formatado": _formatar_centavos(atual),
+                "objetivo_formatado": _formatar_centavos(objetivo),
+                "restante_formatado": _formatar_centavos(restante),
+                "mensal_necessario_formatado": mensal_necessario,
+            })
+        return metas
+
+    @rx.var
     def grafico_financeiro(self) -> list[dict[str, float | str]]:
         hoje = date.today()
         meses = []
@@ -317,11 +726,19 @@ class AppState(rx.State):
     def _formatar_dinheiro(centavos: int) -> str:
         return _formatar_centavos(centavos)
 
+    @staticmethod
+    def _avatar_from_user(user: dict) -> str:
+        avatar = user.get("avatar_url", "")
+        if isinstance(avatar, dict):
+            avatar = avatar.get("url", "")
+        return avatar if isinstance(avatar, str) else ""
+
     async def _api(
         self,
         method: str,
         path: str,
         payload: dict | None = None,
+        upload: tuple[str, str, bytes] | None = None,
     ) -> object:
         return await asyncio.to_thread(
             _send_request,
@@ -329,7 +746,48 @@ class AppState(rx.State):
             path,
             payload,
             self.auth_token,
+            upload,
         )
+
+    def _limpar_sessao(self):
+        self.auth_token = ""
+        self.usuario = {}
+        self.avatar_url = ""
+        self.avatar_perfil_disponivel = False
+        self.dados_carregados = False
+        self.transacoes = []
+        self.contas = []
+        self.categorias = []
+        self.contas_a_pagar = []
+        self.orcamentos = []
+        self.metas = []
+        self.recorrencias = []
+        self.recorrencias_disponiveis = False
+        self.transacao_busca = ""
+        self.transacao_filtro_tipo = "todas"
+        self.transacao_filtro_periodo = "todas"
+        self.transacao_filtro_categoria = "todas"
+        self.transacao_filtro_conta = "todas"
+        self.recorrencia_descricao = ""
+        self.recorrencia_valor = ""
+        self.meta_contribuicao = ""
+        self.preferencias = {}
+        self.moeda = "BRL"
+        self.localidade = "pt-BR"
+        self.fuso_horario = "America/Sao_Paulo"
+        self.notificacoes_vencimento = True
+        self.notificacoes_orcamento = True
+        self.notificacoes_metas = True
+        self.notificacoes_metas_disponivel = False
+        self.assistente_conversas = []
+        self.assistente_conversa_id = 0
+        self.assistente_mensagens = []
+        self.assistente_mensagem = ""
+        self.auth_password = ""
+        self.auth_password_confirmation = ""
+        self.auth_name = ""
+        self.auth_phone = ""
+        self.aceitou_termos = False
 
     @rx.event
     def set_auth_email(self, value: str):
@@ -339,11 +797,17 @@ class AppState(rx.State):
         self.erro = ""
 
     @rx.event
-    def set_lembrar_email(self, value: bool):
-        if not value and not self.auth_email and self.auth_email_salvo:
+    def set_auth_phone(self, value: str):
+        self.auth_phone = _formatar_telefone(value)
+        self.erro = ""
+
+    @rx.event
+    def set_lembrar_email(self, value: bool | str):
+        normalized = value if isinstance(value, bool) else str(value).lower() in {"true", "1", "yes", "on"}
+        if not normalized and not self.auth_email and self.auth_email_salvo:
             self.auth_email = self.auth_email_salvo
-        self.lembrar_email = "true" if value else "false"
-        self.auth_email_salvo = self.auth_email if value else ""
+        self.lembrar_email = "true" if normalized else "false"
+        self.auth_email_salvo = self.auth_email if normalized else ""
 
     @rx.event
     def set_auth_password(self, value: str):
@@ -351,8 +815,22 @@ class AppState(rx.State):
         self.erro = ""
 
     @rx.event
+    def set_auth_password_confirmation(self, value: str):
+        self.auth_password_confirmation = value
+        self.erro = ""
+
+    @rx.event
+    def set_aceitou_termos(self, value: bool | str):
+        self.aceitou_termos = value if isinstance(value, bool) else str(value).lower() in {"true", "1", "yes", "on"}
+        self.erro = ""
+
+    @rx.event
     def alternar_visibilidade_senha(self):
         self.senha_visivel = not self.senha_visivel
+
+    @rx.event
+    def alternar_visibilidade_confirmacao_senha(self):
+        self.senha_confirmacao_visivel = not self.senha_confirmacao_visivel
 
     @rx.event
     def set_auth_name(self, value: str):
@@ -360,18 +838,69 @@ class AppState(rx.State):
         self.erro = ""
 
     @rx.event
-    def alternar_cadastro(self):
-        self.cadastro = not self.cadastro
+    def preparar_cadastro(self):
+        self.cadastro = True
+        self.auth_password = ""
+        self.auth_password_confirmation = ""
+        self.aceitou_termos = False
+        self.auth_phone = ""
         self.erro = ""
+        if self.auth_token:
+            return rx.redirect("/app")
 
     @rx.event
-    def login_google(self):
-        self.erro = "O login com Google ainda não está configurado."
+    def preparar_login(self):
+        self.cadastro = False
+        self.auth_password = ""
+        self.auth_password_confirmation = ""
+        self.aceitou_termos = False
+        self.auth_phone = ""
+        self.erro = ""
+        if self.auth_token:
+            return rx.redirect("/app")
+
+    @rx.event
+    def redirecionar_usuario_autenticado(self):
+        if self.auth_token:
+            return rx.redirect("/app")
 
     @rx.event
     async def autenticar(self):
-        self.carregando = True
         self.erro = ""
+        email = self.auth_email.strip()
+        if not email and self.lembrar_email == "true":
+            email = self.auth_email_salvo.strip()
+        if not email:
+            self.erro = "Informe seu e-mail."
+            return
+        if not self.auth_password:
+            self.erro = "Informe sua senha."
+            return
+        if self.cadastro:
+            if not self.auth_name.strip():
+                self.erro = "Informe seu nome."
+                return
+            if len("".join(char for char in self.auth_phone if char.isdigit())) < 10:
+                self.erro = "Informe um telefone válido com DDD."
+                return
+            if self.auth_password != self.auth_password_confirmation:
+                self.erro = "As senhas não conferem."
+                return
+            if not self.aceitou_termos:
+                self.erro = "Aceite os Termos de Uso e a Política de Privacidade."
+                return
+            if (
+                len(self.auth_password) < 8
+                or not any(char.isalpha() for char in self.auth_password)
+                or not any(char.isdigit() for char in self.auth_password)
+            ):
+                self.erro = "A senha deve ter ao menos 8 caracteres, uma letra e um número."
+                return
+
+        self.auth_email = email
+        if self.lembrar_email == "true":
+            self.auth_email_salvo = email
+        self.carregando = True
         try:
             if self.cadastro:
                 response = _as_record(
@@ -380,7 +909,8 @@ class AppState(rx.State):
                         "auth/signup",
                         {
                             "name": self.auth_name.strip(),
-                            "email": self.auth_email.strip(),
+                            "email": email,
+                            "phone": self.auth_phone.strip(),
                             "password": self.auth_password,
                         },
                     )
@@ -391,7 +921,7 @@ class AppState(rx.State):
                         "POST",
                         "auth/login",
                         {
-                            "email": self.auth_email.strip(),
+                            "email": email,
                             "password": self.auth_password,
                         },
                     )
@@ -401,54 +931,95 @@ class AppState(rx.State):
                 raise XanoAPIError("O Xano não retornou um token de sessão.")
             self.auth_token = str(token)
             self.usuario = _as_record(response.get("user"))
+            self.avatar_url = self._avatar_from_user(self.usuario)
             self.auth_password = ""
-            await self.carregar_dados()
+            self.auth_password_confirmation = ""
+            return rx.redirect("/app")
         except XanoAPIError as error:
             self.erro = str(error)
         finally:
             self.carregando = False
 
-    @rx.event
-    async def carregar_dados(self):
+    async def _carregar_dados(self, force: bool = False):
         if not self.auth_token:
+            return rx.redirect("/login")
+        if self.dados_carregados and not force:
             return
         self.carregando = True
         self.erro = ""
         try:
-            respostas = await asyncio.gather(
-                self._api("GET", "auth/me"),
-                self._api("GET", "transacoes"),
-                self._api("GET", "contas"),
-                self._api("GET", "categorias"),
-                self._api("GET", "contas_a_pagar"),
-                self._api("GET", "orcamentos"),
-                self._api("GET", "metas_financeiras"),
-                self._api("GET", "preferencias_usuario/me"),
-            )
-            self.usuario = _as_record(respostas[0])
+            resumo = _as_record(await self._api("GET", "resumo"))
+            chaves_resumo = {
+                "usuario",
+                "transacoes",
+                "contas",
+                "categorias",
+                "contas_a_pagar",
+                "orcamentos",
+                "metas",
+                "recorrencias",
+                "preferencias",
+            }
+            if chaves_resumo.issubset(resumo):
+                dados = resumo
+            else:
+                respostas = await asyncio.gather(
+                    self._api("GET", "auth/me"),
+                    self._api("GET", "contas"),
+                    self._api("GET", "categorias"),
+                    self._api("GET", "contas_a_pagar"),
+                    self._api("GET", "orcamentos"),
+                    self._api("GET", "metas_financeiras"),
+                    self._api("GET", "preferencias_usuario/me"),
+                )
+                dados = {
+                    "usuario": respostas[0],
+                    "transacoes": resumo.get("transacoes", []),
+                    "contas": respostas[1],
+                    "categorias": respostas[2],
+                    "contas_a_pagar": respostas[3],
+                    "orcamentos": respostas[4],
+                    "metas": respostas[5],
+                    "recorrencias": [],
+                    "preferencias": respostas[6],
+                }
+
+            self.usuario = _as_record(dados.get("usuario"))
+            self.avatar_url = self._avatar_from_user(self.usuario)
+            self.avatar_perfil_disponivel = "avatar_url" in self.usuario
             self.transacoes = _records_with_money(
-                respostas[1],
+                dados.get("transacoes"),
                 "valor_centavos",
             )
             self.contas = _records_with_money(
-                respostas[2],
+                dados.get("contas"),
                 "saldo_inicial_centavos",
                 "saldo_inicial_formatado",
             )
-            self.categorias = _records(respostas[3])
+            self.categorias = _records(dados.get("categorias"))
             self.contas_a_pagar = _records_with_money(
-                respostas[4],
+                dados.get("contas_a_pagar"),
                 "valor_centavos",
             )
             self.orcamentos = _records_with_money(
-                respostas[5],
+                dados.get("orcamentos"),
                 "limite_centavos",
             )
             self.metas = _records_with_money(
-                respostas[6],
+                dados.get("metas"),
                 "valor_objetivo_centavos",
             )
-            self.preferencias = _as_record(respostas[7])
+            self.recorrencias = _records_with_money(
+                dados.get("recorrencias"),
+                "valor_centavos",
+            )
+            self.recorrencias_disponiveis = (
+                "recorrencias" in resumo
+            )
+            self.preferencias = _as_record(dados.get("preferencias"))
+            self.notificacoes_metas_disponivel = (
+                "notificacoes_metas" in self.preferencias
+            )
             self.moeda = self.preferencias.get("moeda", "BRL")
             self.localidade = self.preferencias.get("localidade", "pt-BR")
             self.fuso_horario = self.preferencias.get(
@@ -463,33 +1034,41 @@ class AppState(rx.State):
                 "notificacoes_orcamento",
                 True,
             )
+            self.notificacoes_metas = self.preferencias.get(
+                "notificacoes_metas",
+                True,
+            )
+            self.dados_carregados = True
+            if self.recorrencias_disponiveis:
+                try:
+                    await self._processar_recorrencias()
+                except XanoAPIError as error:
+                    self.erro = (
+                        f"Não foi possível atualizar recorrências: {error}"
+                    )
         except XanoAPIError as error:
             self.erro = str(error)
-            if "401" in str(error) or "autentica" in str(error).lower():
-                self.auth_token = ""
-                self.usuario = {}
-                self.assistente_conversas = []
-                self.assistente_conversa_id = 0
-                self.assistente_mensagens = []
+            if error.status_code == 401:
+                self._limpar_sessao()
+                self.erro = "Sua sessão expirou. Entre novamente."
+                return rx.redirect("/login")
         finally:
             self.carregando = False
 
     @rx.event
+    async def carregar_dados(self):
+        return await self._carregar_dados()
+
+    @rx.event
+    async def atualizar_dados(self):
+        return await self._carregar_dados(force=True)
+
+    @rx.event
     def sair(self):
-        self.auth_token = ""
-        self.usuario = {}
-        self.transacoes = []
-        self.contas = []
-        self.categorias = []
-        self.contas_a_pagar = []
-        self.orcamentos = []
-        self.metas = []
-        self.assistente_conversas = []
-        self.assistente_conversa_id = 0
-        self.assistente_mensagens = []
-        self.assistente_mensagem = ""
-        self.auth_password = ""
+        self._limpar_sessao()
+        self.erro = ""
         self.aviso = "Você saiu da sua conta."
+        return rx.redirect("/login")
 
     @rx.event
     def set_tipo_transacao(self, value: str):
@@ -504,8 +1083,272 @@ class AppState(rx.State):
         self.transacao_valor = value
 
     @rx.event
+    def formatar_transacao_valor(self):
+        if not self.transacao_valor.strip():
+            return
+        try:
+            self.transacao_valor = _formatar_entrada_reais(
+                self.transacao_valor
+            )
+        except XanoAPIError:
+            return
+
+    @rx.event
+    def set_transacao_busca(self, value: str):
+        self.transacao_busca = value
+
+    @rx.event
+    def set_transacao_filtro_tipo(self, value: str):
+        self.transacao_filtro_tipo = value
+
+    @rx.event
+    def set_transacao_filtro_periodo(self, value: str):
+        self.transacao_filtro_periodo = value
+
+    @rx.event
+    def set_transacao_filtro_categoria(self, value: str):
+        self.transacao_filtro_categoria = value
+
+    @rx.event
+    def set_transacao_filtro_conta(self, value: str):
+        self.transacao_filtro_conta = value
+
+    @rx.event
+    def dispensar_notificacao(self, notificacao_id: str):
+        if notificacao_id not in self.notificacoes_descartadas:
+            self.notificacoes_descartadas.append(notificacao_id)
+
+    @rx.event
+    def exportar_transacoes_csv(self):
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow(["Data", "Tipo", "Descrição", "Valor (R$)", "Categoria"])
+        categorias = {
+            str(categoria.get("id")): categoria.get("nome", "")
+            for categoria in self.categorias
+        }
+        for transacao in self.transacoes_filtradas:
+            centavos = int(transacao.get("valor_centavos", 0) or 0)
+            valor = f"{Decimal(centavos) / 100:.2f}".replace(".", ",")
+            writer.writerow([
+                transacao.get("data", ""),
+                transacao.get("tipo", ""),
+                _csv_safe_text(transacao.get("descricao", "")),
+                valor,
+                _csv_safe_text(
+                    categorias.get(str(transacao.get("categoria_id")), "")
+                ),
+            ])
+        return rx.download(
+            data="\ufeff" + output.getvalue(),
+            filename="cashsave-transacoes.csv",
+            mime_type="text/csv;charset=utf-8",
+        )
+
+    @rx.event
     def set_transacao_data(self, value: str):
         self.transacao_data = value
+
+    @rx.event
+    def set_recorrencia_descricao(self, value: str):
+        self.recorrencia_descricao = value
+
+    @rx.event
+    def set_recorrencia_valor(self, value: str):
+        self.recorrencia_valor = value
+
+    @rx.event
+    def formatar_recorrencia_valor(self):
+        if not self.recorrencia_valor.strip():
+            return
+        try:
+            self.recorrencia_valor = _formatar_entrada_reais(
+                self.recorrencia_valor
+            )
+        except XanoAPIError:
+            return
+
+    @rx.event
+    def set_recorrencia_tipo(self, value: str):
+        self.recorrencia_tipo = value
+
+    @rx.event
+    def set_recorrencia_frequencia(self, value: str):
+        self.recorrencia_frequencia = value
+
+    @rx.event
+    def set_recorrencia_proxima_data(self, value: str):
+        self.recorrencia_proxima_data = value
+
+    @rx.event
+    async def criar_recorrencia(self):
+        if not self.recorrencias_disponiveis:
+            self.erro = (
+                "Atualize as APIs do Xano para habilitar lançamentos recorrentes."
+            )
+            return
+        descricao = self.recorrencia_descricao.strip()
+        if not descricao or not self.recorrencia_proxima_data:
+            self.erro = "Informe a descrição e a data da recorrência."
+            return
+        try:
+            response = _as_record(
+                await self._api(
+                    "POST",
+                    "recorrencias",
+                    {
+                        "tipo": self.recorrencia_tipo,
+                        "descricao": descricao,
+                        "valor_centavos": _money_to_cents(
+                            self.recorrencia_valor
+                        ),
+                        "frequencia": self.recorrencia_frequencia,
+                        "proxima_data": self.recorrencia_proxima_data,
+                        "dia_referencia": int(
+                            self.recorrencia_proxima_data[8:10]
+                        ),
+                        "mes_referencia": int(
+                            self.recorrencia_proxima_data[5:7]
+                        ),
+                    },
+                )
+            )
+            if "id" not in response:
+                raise XanoAPIError(
+                    "O Xano não confirmou a criação da recorrência."
+                )
+            self.recorrencias = _records_with_money(
+                [*self.recorrencias, response],
+                "valor_centavos",
+            )
+            self.recorrencia_descricao = ""
+            self.recorrencia_valor = ""
+            self.erro = ""
+            self.aviso = "Lançamento recorrente criado."
+        except (XanoAPIError, ValueError) as error:
+            self.erro = str(error)
+
+    @rx.event
+    async def alternar_recorrencia(self, recorrencia_id: int):
+        if not self.recorrencias_disponiveis:
+            self.erro = (
+                "Atualize as APIs do Xano para gerenciar recorrências."
+            )
+            return
+        try:
+            atual = next(
+                (
+                    item
+                    for item in self.recorrencias
+                    if item.get("id") == recorrencia_id
+                ),
+                None,
+            )
+            if atual is None:
+                raise XanoAPIError("Recorrência não encontrada.")
+            atualizada = _as_record(
+                await self._api(
+                    "PATCH",
+                    f"recorrencias/{recorrencia_id}",
+                    {"ativa": not bool(atual.get("ativa", True))},
+                )
+            )
+            if not atualizada:
+                raise XanoAPIError(
+                    "O Xano não confirmou a alteração da recorrência."
+                )
+            self.recorrencias = [
+                atualizada if item.get("id") == recorrencia_id else item
+                for item in self.recorrencias
+            ]
+        except XanoAPIError as error:
+            self.erro = str(error)
+
+    @rx.event
+    async def excluir_recorrencia(self, recorrencia_id: int):
+        if not self.recorrencias_disponiveis:
+            self.erro = (
+                "Atualize as APIs do Xano para gerenciar recorrências."
+            )
+            return
+        try:
+            await self._api("DELETE", f"recorrencias/{recorrencia_id}")
+            self.recorrencias = [
+                item
+                for item in self.recorrencias
+                if item.get("id") != recorrencia_id
+            ]
+        except XanoAPIError as error:
+            self.erro = str(error)
+
+    async def _processar_recorrencias(self):
+        hoje = date.today()
+        for recorrencia in list(self.recorrencias):
+            if not recorrencia.get("ativa", True):
+                continue
+            data_ocorrencia = str(recorrencia.get("proxima_data", ""))[:10]
+            while data_ocorrencia and data_ocorrencia <= hoje.isoformat():
+                payload = {
+                    "tipo": recorrencia.get("tipo"),
+                    "descricao": recorrencia.get("descricao"),
+                    "valor_centavos": int(
+                        recorrencia.get("valor_centavos", 0) or 0
+                    ),
+                    "data": data_ocorrencia,
+                    "conta_id": recorrencia.get("conta_id"),
+                    "categoria_id": recorrencia.get("categoria_id"),
+                    "recorrencia_id": recorrencia.get("id"),
+                    "recorrencia_data": data_ocorrencia,
+                }
+                try:
+                    transacao = _as_record(
+                        await self._api("POST", "transacoes", payload)
+                    )
+                    if "id" not in transacao:
+                        raise XanoAPIError(
+                            "O Xano não confirmou o lançamento recorrente."
+                        )
+                    self.transacoes = _records_with_money(
+                        [transacao, *self.transacoes],
+                        "valor_centavos",
+                    )
+                except XanoAPIError as error:
+                    if str(error) != (
+                        "Esta ocorrência recorrente já foi registrada."
+                    ):
+                        raise
+
+                proxima_data = _proxima_data_recorrente(
+                    data_ocorrencia,
+                    str(recorrencia.get("frequencia", "")),
+                    int(recorrencia.get("dia_referencia", 0) or 0),
+                    int(recorrencia.get("mes_referencia", 0) or 0),
+                )
+                atualizada = _as_record(
+                    await self._api(
+                        "PATCH",
+                        f"recorrencias/{recorrencia['id']}",
+                        {"proxima_data": proxima_data},
+                    )
+                )
+                if not atualizada:
+                    raise XanoAPIError(
+                        "O Xano não confirmou a próxima data recorrente."
+                    )
+                recorrencia = {
+                    **recorrencia,
+                    **atualizada,
+                    "valor_formatado": _formatar_centavos(
+                        int(atualizada.get("valor_centavos", 0) or 0)
+                    ),
+                }
+                self.recorrencias = [
+                    recorrencia
+                    if item.get("id") == recorrencia.get("id")
+                    else item
+                    for item in self.recorrencias
+                ]
+                data_ocorrencia = proxima_data
 
     @rx.event
     def set_transacao_categoria(self, value: str):
@@ -532,10 +1375,17 @@ class AppState(rx.State):
             }
             if not payload["descricao"] or not payload["data"]:
                 raise XanoAPIError("Preencha descrição e data.")
-            await self._api("POST", "transacoes", payload)
+            transacao = _as_record(
+                await self._api("POST", "transacoes", payload)
+            )
+            if "id" not in transacao:
+                raise XanoAPIError("O Xano não confirmou o lançamento.")
+            self.transacoes = _records_with_money(
+                [transacao, *self.transacoes],
+                "valor_centavos",
+            )
             self.transacao_descricao = ""
             self.transacao_valor = ""
-            await self.carregar_dados()
         except (XanoAPIError, ValueError) as error:
             self.erro = str(error) or "Confira os dados da transação."
 
@@ -543,7 +1393,9 @@ class AppState(rx.State):
     async def excluir_transacao(self, transacao_id: int):
         try:
             await self._api("DELETE", f"transacoes/{transacao_id}")
-            await self.carregar_dados()
+            self.transacoes = [
+                item for item in self.transacoes if item.get("id") != transacao_id
+            ]
         except XanoAPIError as error:
             self.erro = str(error)
 
@@ -562,13 +1414,17 @@ class AppState(rx.State):
             self.erro = "Informe o nome da categoria."
             return
         try:
-            await self._api(
-                "POST",
-                "categorias",
-                {"nome": nome, "tipo": self.nova_categoria_tipo},
+            categoria = _as_record(
+                await self._api(
+                    "POST",
+                    "categorias",
+                    {"nome": nome, "tipo": self.nova_categoria_tipo},
+                )
             )
+            if "id" not in categoria:
+                raise XanoAPIError("O Xano não confirmou a categoria.")
+            self.categorias = [*self.categorias, categoria]
             self.nova_categoria_nome = ""
-            await self.carregar_dados()
         except XanoAPIError as error:
             self.erro = str(error)
 
@@ -603,20 +1459,28 @@ class AppState(rx.State):
                 if self.nova_conta_saldo.strip()
                 else 0
             )
-            await self._api(
-                "POST",
-                "contas",
-                {
-                    "nome": nome,
-                    "tipo": self.nova_conta_tipo,
-                    "instituicao": self.nova_conta_instituicao.strip() or None,
-                    "saldo_inicial_centavos": saldo,
-                },
+            conta = _as_record(
+                await self._api(
+                    "POST",
+                    "contas",
+                    {
+                        "nome": nome,
+                        "tipo": self.nova_conta_tipo,
+                        "instituicao": self.nova_conta_instituicao.strip() or None,
+                        "saldo_inicial_centavos": saldo,
+                    },
+                )
+            )
+            if "id" not in conta:
+                raise XanoAPIError("O Xano não confirmou a conta.")
+            self.contas = _records_with_money(
+                [*self.contas, conta],
+                "saldo_inicial_centavos",
+                "saldo_inicial_formatado",
             )
             self.nova_conta_nome = ""
             self.nova_conta_saldo = "0"
             self.nova_conta_instituicao = ""
-            await self.carregar_dados()
         except (XanoAPIError, InvalidOperation) as error:
             self.erro = str(error)
 
@@ -643,34 +1507,50 @@ class AppState(rx.State):
             self.erro = "Preencha a descrição e o vencimento."
             return
         try:
-            await self._api(
-                "POST",
-                "contas_a_pagar",
-                {
-                    "descricao": descricao,
-                    "valor_centavos": _money_to_cents(self.conta_valor),
-                    "data_vencimento": self.conta_vencimento,
-                    "categoria_id": int(self.conta_categoria)
-                    if self.conta_categoria
-                    else None,
-                },
+            conta = _as_record(
+                await self._api(
+                    "POST",
+                    "contas_a_pagar",
+                    {
+                        "descricao": descricao,
+                        "valor_centavos": _money_to_cents(self.conta_valor),
+                        "data_vencimento": self.conta_vencimento,
+                        "categoria_id": int(self.conta_categoria)
+                        if self.conta_categoria
+                        else None,
+                    },
+                )
+            )
+            if "id" not in conta:
+                raise XanoAPIError("O Xano não confirmou a conta a pagar.")
+            self.contas_a_pagar = _records_with_money(
+                [*self.contas_a_pagar, conta],
+                "valor_centavos",
             )
             self.conta_descricao = ""
             self.conta_valor = ""
             self.conta_vencimento = ""
-            await self.carregar_dados()
         except (XanoAPIError, ValueError) as error:
             self.erro = str(error)
 
     @rx.event
     async def pagar_conta(self, conta_id: int):
         try:
-            await self._api(
+            conta_paga = _as_record(await self._api(
                 "POST",
                 f"contas_a_pagar/{conta_id}/pagar",
                 {"data_pagamento": date.today().isoformat()},
-            )
-            await self.carregar_dados()
+            ))
+            if not conta_paga:
+                raise XanoAPIError("O Xano não confirmou o pagamento.")
+            conta_paga_formatada = _records_with_money(
+                [conta_paga],
+                "valor_centavos",
+            )[0]
+            self.contas_a_pagar = [
+                conta_paga_formatada if item.get("id") == conta_id else item
+                for item in self.contas_a_pagar
+            ]
         except XanoAPIError as error:
             self.erro = str(error)
 
@@ -678,7 +1558,11 @@ class AppState(rx.State):
     async def excluir_conta_a_pagar(self, conta_id: int):
         try:
             await self._api("DELETE", f"contas_a_pagar/{conta_id}")
-            await self.carregar_dados()
+            self.contas_a_pagar = [
+                item
+                for item in self.contas_a_pagar
+                if item.get("id") != conta_id
+            ]
         except XanoAPIError as error:
             self.erro = str(error)
 
@@ -708,23 +1592,30 @@ class AppState(rx.State):
             self.erro = "Preencha nome e período do orçamento."
             return
         try:
-            await self._api(
-                "POST",
-                "orcamentos",
-                {
-                    "nome": self.orcamento_nome.strip(),
-                    "limite_centavos": _money_to_cents(self.orcamento_limite),
-                    "data_inicio": self.orcamento_inicio,
-                    "data_fim": self.orcamento_fim,
-                    "categoria_id": int(self.orcamento_categoria)
-                    if self.orcamento_categoria
-                    else None,
-                    "periodicidade": "mensal",
-                },
+            orcamento = _as_record(
+                await self._api(
+                    "POST",
+                    "orcamentos",
+                    {
+                        "nome": self.orcamento_nome.strip(),
+                        "limite_centavos": _money_to_cents(self.orcamento_limite),
+                        "data_inicio": self.orcamento_inicio,
+                        "data_fim": self.orcamento_fim,
+                        "categoria_id": int(self.orcamento_categoria)
+                        if self.orcamento_categoria
+                        else None,
+                        "periodicidade": "mensal",
+                    },
+                )
+            )
+            if "id" not in orcamento:
+                raise XanoAPIError("O Xano não confirmou o orçamento.")
+            self.orcamentos = _records_with_money(
+                [*self.orcamentos, orcamento],
+                "limite_centavos",
             )
             self.orcamento_nome = ""
             self.orcamento_limite = ""
-            await self.carregar_dados()
         except (XanoAPIError, ValueError) as error:
             self.erro = str(error)
 
@@ -732,7 +1623,9 @@ class AppState(rx.State):
     async def excluir_orcamento(self, orcamento_id: int):
         try:
             await self._api("DELETE", f"orcamentos/{orcamento_id}")
-            await self.carregar_dados()
+            self.orcamentos = [
+                item for item in self.orcamentos if item.get("id") != orcamento_id
+            ]
         except XanoAPIError as error:
             self.erro = str(error)
 
@@ -749,25 +1642,68 @@ class AppState(rx.State):
         self.meta_data_alvo = value
 
     @rx.event
+    def set_meta_contribuicao(self, value: str):
+        self.meta_contribuicao = value
+
+    @rx.event
+    async def contribuir_meta(self, meta_id: int):
+        try:
+            meta = next(
+                (item for item in self.metas if item.get("id") == meta_id),
+                None,
+            )
+            if meta is None:
+                raise XanoAPIError("Meta financeira não encontrada.")
+            atual = int(meta.get("valor_atual_centavos", 0) or 0)
+            adicional = _money_to_cents(self.meta_contribuicao)
+            objetivo = int(meta.get("valor_objetivo_centavos", 0) or 0)
+            response = _as_record(
+                await self._api(
+                    "PATCH",
+                    f"metas_financeiras/{meta_id}",
+                    {
+                        "valor_atual_centavos": min(atual + adicional, objetivo),
+                    },
+                )
+            )
+            if not response:
+                raise XanoAPIError("O Xano não confirmou a atualização da meta.")
+            self.metas = [
+                response if item.get("id") == meta_id else item
+                for item in self.metas
+            ]
+            self.meta_contribuicao = ""
+            self.aviso = "Progresso da meta atualizado."
+        except XanoAPIError as error:
+            self.erro = str(error)
+
+    @rx.event
     async def criar_meta(self):
         if not self.meta_nome.strip():
             self.erro = "Informe o nome da meta."
             return
         try:
-            await self._api(
-                "POST",
-                "metas_financeiras",
-                {
-                    "nome": self.meta_nome.strip(),
-                    "valor_objetivo_centavos": _money_to_cents(self.meta_objetivo),
-                    "valor_atual_centavos": 0,
-                    "data_alvo": self.meta_data_alvo or None,
-                },
+            meta = _as_record(
+                await self._api(
+                    "POST",
+                    "metas_financeiras",
+                    {
+                        "nome": self.meta_nome.strip(),
+                        "valor_objetivo_centavos": _money_to_cents(self.meta_objetivo),
+                        "valor_atual_centavos": 0,
+                        "data_alvo": self.meta_data_alvo or None,
+                    },
+                )
             )
+            if "id" not in meta:
+                raise XanoAPIError("O Xano não confirmou a meta.")
+            self.metas = [
+                *self.metas,
+                _records_with_money([meta], "valor_objetivo_centavos")[0],
+            ]
             self.meta_nome = ""
             self.meta_objetivo = ""
             self.meta_data_alvo = ""
-            await self.carregar_dados()
         except (XanoAPIError, ValueError) as error:
             self.erro = str(error)
 
@@ -775,7 +1711,7 @@ class AppState(rx.State):
     async def excluir_meta(self, meta_id: int):
         try:
             await self._api("DELETE", f"metas_financeiras/{meta_id}")
-            await self.carregar_dados()
+            self.metas = [item for item in self.metas if item.get("id") != meta_id]
         except XanoAPIError as error:
             self.erro = str(error)
 
@@ -800,6 +1736,74 @@ class AppState(rx.State):
         self.notificacoes_orcamento = value
 
     @rx.event
+    def set_notificacoes_metas(self, value: bool):
+        self.notificacoes_metas = value
+
+    @rx.event
+    async def enviar_foto_perfil(self, files: list[rx.UploadFile]):
+        if not self.avatar_perfil_disponivel:
+            self.erro = "Atualize os endpoints do Xano para habilitar fotos de perfil."
+            return
+        if not files:
+            self.erro = "Selecione uma imagem para enviar."
+            return
+        arquivo = files[0]
+        media_type = mimetypes.guess_type(arquivo.name)[0] or ""
+        if media_type not in {"image/png", "image/jpeg", "image/webp"}:
+            self.erro = "Use uma imagem PNG, JPG ou WebP."
+            return
+        try:
+            conteudo = await arquivo.read()
+        except OSError as error:
+            raise XanoAPIError("Não foi possível ler a imagem selecionada.") from error
+        if not conteudo:
+            self.erro = "A imagem selecionada está vazia."
+            return
+        if len(conteudo) > 5 * 1024 * 1024:
+            self.erro = "A foto deve ter no máximo 5 MB."
+            return
+        if not _imagem_corresponde_ao_tipo(conteudo, media_type):
+            self.erro = "O arquivo selecionado não corresponde a uma imagem válida."
+            return
+        self.erro = ""
+        try:
+            response = _as_record(
+                await self._api(
+                    "POST",
+                    "auth/avatar",
+                    upload=("avatar", arquivo.name, conteudo),
+                )
+            )
+            usuario = _as_record(response.get("user")) or response
+            avatar_url = self._avatar_from_user(usuario)
+            if not avatar_url:
+                raise XanoAPIError("O Xano não retornou a URL da foto.")
+            self.usuario = {**self.usuario, **usuario}
+            self.avatar_url = avatar_url
+            self.avatar_perfil_disponivel = True
+            self.aviso = "Foto de perfil atualizada."
+            return rx.clear_selected_files("profile-photo")
+        except XanoAPIError as error:
+            self.erro = str(error)
+
+    @rx.event
+    async def remover_foto_perfil(self):
+        if not self.avatar_perfil_disponivel:
+            self.erro = "Atualize os endpoints do Xano para gerenciar fotos de perfil."
+            return
+        try:
+            response = _as_record(
+                await self._api("DELETE", "auth/avatar")
+            )
+            if not response:
+                raise XanoAPIError("O Xano não confirmou a remoção da foto.")
+            self.avatar_url = ""
+            self.usuario = {**self.usuario, "avatar_url": ""}
+            self.aviso = "Foto de perfil removida."
+        except XanoAPIError as error:
+            self.erro = str(error)
+
+    @rx.event
     async def salvar_preferencias(self):
         try:
             await self._api(
@@ -811,10 +1815,10 @@ class AppState(rx.State):
                     "fuso_horario": self.fuso_horario,
                     "notificacoes_vencimento": self.notificacoes_vencimento,
                     "notificacoes_orcamento": self.notificacoes_orcamento,
+                    "notificacoes_metas": self.notificacoes_metas,
                 },
             )
             self.aviso = "Preferências salvas."
-            await self.carregar_dados()
         except XanoAPIError as error:
             self.erro = str(error)
 
@@ -840,12 +1844,16 @@ class AppState(rx.State):
     @rx.event
     async def carregar_conversas_assistente(self):
         if not self.auth_token:
-            return
+            return rx.redirect("/login")
         try:
             response = await self._api("GET", "assistente/conversas")
             self.assistente_conversas = _records(response)
         except XanoAPIError as error:
             self.erro = str(error)
+            if error.status_code == 401:
+                self._limpar_sessao()
+                self.erro = "Sua sessão expirou. Entre novamente."
+                return rx.redirect("/login")
 
     @rx.event
     async def abrir_conversa_assistente(self, conversation_id: int):

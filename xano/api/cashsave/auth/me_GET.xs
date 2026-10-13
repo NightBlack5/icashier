@@ -9,7 +9,7 @@ query "auth/me" verb=GET {
     db.get user {
       field_name = "id"
       field_value = $auth.id
-      output = ["id", "name", "email"]
+      output = ["id", "name", "email", "avatar_url"]
     } as $user
   }
 

@@ -43,8 +43,43 @@ def sidebar() -> rx.Component:
         rx.spacer(),
         rx.divider(),
         rx.vstack(
-            rx.text(AppState.nome_usuario, weight="bold", size="2"),
-            rx.text(AppState.email_usuario, size="1", color="#9ca3af"),
+            rx.hstack(
+                rx.avatar(
+                    src=AppState.avatar_url,
+                    fallback="U",
+                    size="2",
+                    radius="full",
+                ),
+                rx.vstack(
+                    rx.text(
+                        AppState.nome_usuario,
+                        weight="bold",
+                        size="2",
+                        width="100%",
+                        overflow="hidden",
+                        text_overflow="ellipsis",
+                        white_space="nowrap",
+                    ),
+                    rx.text(
+                        AppState.email_usuario,
+                        size="1",
+                        color="#9ca3af",
+                        width="100%",
+                        overflow="hidden",
+                        text_overflow="ellipsis",
+                        white_space="nowrap",
+                        title=AppState.email_usuario,
+                    ),
+                    spacing="0",
+                    width="100%",
+                    min_width="0",
+                    align="start",
+                ),
+                spacing="2",
+                width="100%",
+                min_width="0",
+                align="center",
+            ),
             rx.button(
                 "Sair",
                 on_click=AppState.sair,
@@ -177,7 +212,7 @@ def financas_conteudo() -> rx.Component:
             rx.button(
                 rx.icon("refresh-cw", size=16),
                 "Atualizar",
-                on_click=AppState.carregar_dados,
+                on_click=AppState.atualizar_dados,
                 variant="outline",
             ),
             width="100%",
@@ -212,11 +247,10 @@ def financas_conteudo() -> rx.Component:
             ),
             rx.input(
                 placeholder="Valor em reais",
-                type="number",
-                min="0.01",
-                step="0.01",
+                type="text",
                 value=AppState.transacao_valor,
                 on_change=AppState.set_transacao_valor,
+                on_blur=AppState.formatar_transacao_valor,
                 width="100%",
             ),
             rx.input(
@@ -233,14 +267,150 @@ def financas_conteudo() -> rx.Component:
         ),
         secao(
             "Transações",
+            rx.hstack(
+                rx.input(
+                    placeholder="Buscar descrição",
+                    value=AppState.transacao_busca,
+                    on_change=AppState.set_transacao_busca,
+                    width="100%",
+                ),
+                rx.select(
+                    ["todas", "despesa", "receita"],
+                    value=AppState.transacao_filtro_tipo,
+                    on_change=AppState.set_transacao_filtro_tipo,
+                ),
+                rx.select(
+                    AppState.opcoes_filtro_categoria,
+                    value=AppState.transacao_filtro_categoria,
+                    on_change=AppState.set_transacao_filtro_categoria,
+                ),
+                rx.select(
+                    AppState.opcoes_filtro_conta,
+                    value=AppState.transacao_filtro_conta,
+                    on_change=AppState.set_transacao_filtro_conta,
+                ),
+                rx.select(
+                    ["todas", "este mes", "ultimos 3 meses"],
+                    value=AppState.transacao_filtro_periodo,
+                    on_change=AppState.set_transacao_filtro_periodo,
+                ),
+                rx.button(
+                    "Exportar CSV",
+                    on_click=AppState.exportar_transacoes_csv,
+                    variant="outline",
+                ),
+                width="100%",
+                align="center",
+                flex_wrap="wrap",
+            ),
             rx.cond(
-                AppState.transacoes.length() > 0,
+                AppState.transacoes_filtradas.length() > 0,
                 rx.vstack(
-                    rx.foreach(AppState.transacoes, transacao_item),
+                    rx.foreach(AppState.transacoes_filtradas, transacao_item),
                     width="100%",
                     spacing="0",
                 ),
-                rx.text("Ainda não há transações.", color="#9ca3af"),
+                rx.text(
+                    "Nenhuma transação corresponde aos filtros.",
+                    color="#9ca3af",
+                ),
+            ),
+        ),
+        secao(
+            "Lançamentos recorrentes",
+            rx.cond(
+                AppState.recorrencias_disponiveis,
+                rx.fragment(),
+                rx.callout(
+                    "Este recurso precisa que os novos endpoints e tabelas do "
+                    "Xano sejam publicados.",
+                    icon="triangle-alert",
+                    color_scheme="amber",
+                ),
+            ),
+            rx.text(
+                "O app lança automaticamente as ocorrências vencidas quando você "
+                "o abre.",
+                size="2",
+                color="#9ca3af",
+            ),
+            rx.select(
+                ["despesa", "receita"],
+                value=AppState.recorrencia_tipo,
+                on_change=AppState.set_recorrencia_tipo,
+                width="100%",
+            ),
+            rx.input(
+                placeholder="Descrição da recorrência",
+                value=AppState.recorrencia_descricao,
+                on_change=AppState.set_recorrencia_descricao,
+                width="100%",
+            ),
+            rx.input(
+                placeholder="Valor em reais",
+                type="text",
+                value=AppState.recorrencia_valor,
+                on_change=AppState.set_recorrencia_valor,
+                on_blur=AppState.formatar_recorrencia_valor,
+                width="100%",
+            ),
+            rx.select(
+                ["diaria", "semanal", "mensal", "anual"],
+                value=AppState.recorrencia_frequencia,
+                on_change=AppState.set_recorrencia_frequencia,
+                width="100%",
+            ),
+            rx.input(
+                type="date",
+                value=AppState.recorrencia_proxima_data,
+                on_change=AppState.set_recorrencia_proxima_data,
+                width="100%",
+            ),
+            rx.button(
+                "Adicionar recorrência",
+                on_click=AppState.criar_recorrencia,
+                color_scheme="green",
+                disabled=AppState.recorrencias_disponiveis == False,
+            ),
+            rx.cond(
+                AppState.recorrencias.length() > 0,
+                rx.vstack(
+                    rx.foreach(
+                        AppState.recorrencias,
+                        lambda item: rx.hstack(
+                            rx.vstack(
+                                rx.text(item["descricao"], weight="medium"),
+                                rx.text(
+                                    f"{item['frequencia']} · próxima em "
+                                    f"{item['proxima_data']} · "
+                                    f"{item['valor_formatado']}",
+                                    size="2",
+                                    color="#9ca3af",
+                                ),
+                                spacing="1",
+                                align="start",
+                            ),
+                            rx.spacer(),
+                            rx.button(
+                                rx.cond(item["ativa"], "Pausar", "Retomar"),
+                                on_click=AppState.alternar_recorrencia(item["id"]),
+                                variant="outline",
+                            ),
+                            rx.icon_button(
+                                rx.icon("trash-2", size=16),
+                                on_click=AppState.excluir_recorrencia(item["id"]),
+                                variant="ghost",
+                                color_scheme="red",
+                                aria_label="Excluir recorrência",
+                            ),
+                            width="100%",
+                            align="center",
+                        ),
+                    ),
+                    width="100%",
+                    spacing="2",
+                ),
+                rx.text("Nenhum lançamento recorrente configurado."),
             ),
         ),
         rx.grid(
@@ -350,11 +520,63 @@ def financas_conteudo() -> rx.Component:
                 ),
                 rx.button("Criar meta", on_click=AppState.criar_meta, color_scheme="green"),
                 rx.foreach(
-                    AppState.metas,
-                    lambda item: valor_item(
-                        item,
-                        "nome",
-                        AppState.excluir_meta,
+                    AppState.metas_com_progresso,
+                    lambda item: rx.vstack(
+                        rx.hstack(
+                            rx.vstack(
+                                rx.text(item["nome"], weight="medium"),
+                                rx.text(
+                                    f"{item['atual_formatado']} de "
+                                    f"{item['objetivo_formatado']} · "
+                                    f"{item['progresso_percentual']}% concluído · "
+                                    f"faltam {item['restante_formatado']}",
+                                    size="2",
+                                    color="#9ca3af",
+                                ),
+                                spacing="1",
+                                align="start",
+                            ),
+                            rx.spacer(),
+                            rx.icon_button(
+                                rx.icon("trash-2", size=16),
+                                on_click=AppState.excluir_meta(item["id"]),
+                                variant="ghost",
+                                color_scheme="red",
+                                aria_label="Excluir meta",
+                            ),
+                            width="100%",
+                            align="center",
+                        ),
+                        rx.progress(
+                            value=item["progresso_percentual"],
+                            max=100,
+                            width="100%",
+                        ),
+                        rx.cond(
+                            item["mensal_necessario_formatado"] != "",
+                            rx.text(
+                                "Para chegar ao prazo, guarde cerca de "
+                                f"{item['mensal_necessario_formatado']} por mês.",
+                                size="2",
+                            ),
+                            rx.fragment(),
+                        ),
+                        rx.hstack(
+                            rx.input(
+                                placeholder="Valor da contribuição",
+                                value=AppState.meta_contribuicao,
+                                on_change=AppState.set_meta_contribuicao,
+                                width="100%",
+                            ),
+                            rx.button(
+                                "Guardar",
+                                on_click=AppState.contribuir_meta(item["id"]),
+                                color_scheme="green",
+                            ),
+                            width="100%",
+                        ),
+                        width="100%",
+                        spacing="2",
                     ),
                 ),
             ),

@@ -16,6 +16,8 @@ table transacoes {
       table = "categorias"
     }
 
+    int? recorrencia_id?
+
     enum tipo {
       values = ["receita", "despesa"]
     }
@@ -23,6 +25,7 @@ table transacoes {
     text descricao filters=trim
     int valor_centavos filters=min:1
     date data
+    date? recorrencia_data?
     text? observacoes? filters=trim
     timestamp criado_em?=now
     timestamp atualizado_em?
@@ -38,6 +41,10 @@ table transacoes {
     {
       type : "btree"
       field: [{name: "usuario_id"}, {name: "data", op: "desc"}]
+    }
+    {
+      type : "btree|unique"
+      field: [{name: "recorrencia_id"}, {name: "recorrencia_data"}]
     }
   ]
 

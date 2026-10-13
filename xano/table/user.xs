@@ -10,6 +10,8 @@ table user {
   
     text name filters=trim
     email? email filters=trim|lower
+    text? phone filters=trim
+    file? avatar_url?
     password? password filters=min:8|minAlpha:1|minDigit:1 {
       visibility = "internal"
     }

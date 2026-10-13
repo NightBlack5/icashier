@@ -7,7 +7,7 @@ from .pages.financas import financas
 from .pages.landing import landing_page
 from .pages.sobre import conteudo_sobre
 from .pages.suporte import conteudo_suporte
-from .pages.auth import auth_page
+from .pages.auth import auth_page, cadastro_page, login_page
 from .state import AppState
 
 
@@ -132,6 +132,7 @@ def sidebar(rota_atual: str) -> rx.Component:
         rx.hstack(
 
             rx.avatar(
+                src=AppState.avatar_url,
                 fallback="U",
                 size="2",
                 radius="full",
@@ -142,16 +143,27 @@ def sidebar(rota_atual: str) -> rx.Component:
                     AppState.nome_usuario,
                     size="2",
                     weight="medium",
+                    width="100%",
+                    overflow="hidden",
+                    text_overflow="ellipsis",
+                    white_space="nowrap",
                 ),
 
                 rx.text(
                     AppState.email_usuario,
                     size="1",
                     color_scheme="gray",
+                    width="100%",
+                    overflow="hidden",
+                    text_overflow="ellipsis",
+                    white_space="nowrap",
+                    title=AppState.email_usuario,
                 ),
 
                 spacing="0",
                 align="start",
+                width="100%",
+                min_width="0",
             ),
 
             align="center",
@@ -681,6 +693,87 @@ def dashboard_conteudo() -> rx.Component:
             "Resumo das suas finanças",
         ),
 
+        rx.cond(
+            AppState.erro != "",
+            rx.callout(
+                AppState.erro,
+                icon="triangle-alert",
+                color_scheme="red",
+                width="100%",
+            ),
+            rx.fragment(),
+        ),
+
+        rx.vstack(
+            rx.heading("Notificações", size="4"),
+            rx.cond(
+                AppState.notificacoes_ativas.length() > 0,
+                rx.vstack(
+                    rx.foreach(
+                        AppState.notificacoes_ativas,
+                        lambda item: rx.hstack(
+                            rx.icon("bell-ring", color="var(--amber-9)"),
+                            rx.vstack(
+                                rx.text(item["titulo"], weight="bold"),
+                                rx.text(item["mensagem"], size="2"),
+                                align="start",
+                                spacing="1",
+                            ),
+                            rx.spacer(),
+                            rx.icon_button(
+                                rx.icon("x", size=16),
+                                on_click=AppState.dispensar_notificacao(
+                                    item["id"]
+                                ),
+                                variant="ghost",
+                                aria_label="Dispensar notificação",
+                            ),
+                            align="center",
+                            width="100%",
+                        ),
+                    ),
+                    width="100%",
+                    spacing="3",
+                ),
+                rx.text("Você não tem alertas financeiros no momento."),
+            ),
+            width="100%",
+            align="start",
+            spacing="3",
+            padding="1em",
+            border="1px solid var(--gray-5)",
+            border_radius="12px",
+        ),
+
+        rx.cond(
+            AppState.sugestoes_financeiras.length() > 0,
+            rx.vstack(
+                rx.heading("Sugestões para você", size="4"),
+                rx.grid(
+                    rx.foreach(
+                        AppState.sugestoes_financeiras,
+                        lambda item: rx.card(
+                            rx.vstack(
+                                rx.heading(item["titulo"], size="3"),
+                                rx.text(item["mensagem"], size="2"),
+                                align="start",
+                                spacing="2",
+                                width="100%",
+                            ),
+                            width="100%",
+                        ),
+                    ),
+                    columns=rx.breakpoints(initial="1", md="2"),
+                    spacing="3",
+                    width="100%",
+                ),
+                width="100%",
+                align="start",
+                spacing="3",
+            ),
+            rx.fragment(),
+        ),
+
         # Cards
         rx.grid(
 
@@ -860,6 +953,65 @@ def perfil() -> rx.Component:
                         checked=AppState.notificacoes_orcamento,
                         on_change=AppState.set_notificacoes_orcamento,
                     ),
+                    rx.checkbox(
+                        "Alertas de metas financeiras",
+                        checked=AppState.notificacoes_metas,
+                        on_change=AppState.set_notificacoes_metas,
+                        disabled=AppState.notificacoes_metas_disponivel == False,
+                    ),
+                    rx.cond(
+                        AppState.notificacoes_metas_disponivel,
+                        rx.fragment(),
+                        rx.text(
+                            "Os alertas de metas precisam da atualização do Xano.",
+                            size="2",
+                            color_scheme="amber",
+                        ),
+                    ),
+                    rx.heading("Foto de perfil", size="4"),
+                    rx.cond(
+                        AppState.avatar_perfil_disponivel,
+                        rx.fragment(),
+                        rx.text(
+                            "O envio de fotos será habilitado após publicar "
+                            "os endpoints de avatar no Xano.",
+                            size="2",
+                            color_scheme="amber",
+                        ),
+                    ),
+                    rx.avatar(
+                        src=AppState.avatar_url,
+                        fallback="U",
+                        size="6",
+                        radius="full",
+                    ),
+                    rx.upload(
+                        rx.text("Escolher uma imagem (PNG, JPG ou WebP)"),
+                        id="profile-photo",
+                        accept={
+                            "image/png": [".png"],
+                            "image/jpeg": [".jpg", ".jpeg"],
+                            "image/webp": [".webp"],
+                        },
+                        max_files=1,
+                        border="1px dashed var(--gray-7)",
+                        padding="1em",
+                        width="100%",
+                    ),
+                    rx.button(
+                        "Enviar foto",
+                        on_click=AppState.enviar_foto_perfil(
+                            rx.upload_files(upload_id="profile-photo")
+                        ),
+                        variant="outline",
+                        disabled=AppState.avatar_perfil_disponivel == False,
+                    ),
+                    rx.button(
+                        "Remover foto",
+                        on_click=AppState.remover_foto_perfil,
+                        variant="ghost",
+                        disabled=AppState.avatar_perfil_disponivel == False,
+                    ),
                     rx.button(
                         "Salvar preferências",
                         on_click=AppState.salvar_preferencias,
@@ -910,6 +1062,20 @@ app.add_page(
     landing_page,
     route="/",
     title="CashSave | Organize seu dinheiro",
+)
+
+app.add_page(
+    login_page,
+    route="/login",
+    title="CashSave | Entrar",
+    on_load=AppState.preparar_login,
+)
+
+app.add_page(
+    cadastro_page,
+    route="/cadastro",
+    title="CashSave | Criar conta",
+    on_load=AppState.preparar_cadastro,
 )
 
 app.add_page(

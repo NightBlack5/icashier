@@ -43,7 +43,7 @@ def botao_acesso(rotulo: str = "Começar grátis") -> rx.Component:
             _hover={"background": "#51f0b6", "transform": "translateY(-2px)"},
             transition="all 160ms ease",
         ),
-        href="/app",
+        href="/login",
         text_decoration="none",
     )
 

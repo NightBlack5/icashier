@@ -114,6 +114,7 @@ def sidebar() -> rx.Component:
         rx.hstack(
 
             rx.avatar(
+                src=AppState.avatar_url,
                 fallback="U",
                 size="2",
                 radius="full",
@@ -124,16 +125,27 @@ def sidebar() -> rx.Component:
                     AppState.nome_usuario,
                     size="2",
                     weight="medium",
+                    width="100%",
+                    overflow="hidden",
+                    text_overflow="ellipsis",
+                    white_space="nowrap",
                 ),
 
                 rx.text(
                     AppState.email_usuario,
                     size="1",
                     color_scheme="gray",
+                    width="100%",
+                    overflow="hidden",
+                    text_overflow="ellipsis",
+                    white_space="nowrap",
+                    title=AppState.email_usuario,
                 ),
 
                 spacing="0",
                 align="start",
+                width="100%",
+                min_width="0",
             ),
 
             align="center",
