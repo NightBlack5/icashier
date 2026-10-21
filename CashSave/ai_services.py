@@ -584,6 +584,12 @@ class FinancialOrchestrator:
                 "orçamento",
                 "orcamento",
                 "meta",
+                "economizar",
+                "economize",
+                "poupar",
+                "poupar",
+                "reduzir gastos",
+                "guardar dinheiro",
             )
         ):
             return self._deterministic_financial_answer(
@@ -660,6 +666,25 @@ class FinancialOrchestrator:
                     )
             else:
                 facts.append("Não há orçamentos disponíveis.")
+        savings_question = any(
+            phrase in question
+            for phrase in (
+                "economizar",
+                "economize",
+                "poupar",
+                "reduzir gasto",
+                "guardar dinheiro",
+            )
+        )
+        if savings_question:
+            calculations.append(
+                "Priorize revisar as maiores categorias de despesas antes de "
+                "definir um valor fixo para poupar."
+            )
+            calculations.append(
+                "Separe uma quantia compatível com o saldo calculado e revise "
+                "o resultado no próximo mês."
+            )
         projection = context["previsao"]
         if projection.get("status") == "insuficiente":
             estimates.append(str(projection["motivo"]))
@@ -670,8 +695,16 @@ class FinancialOrchestrator:
             )
         return {
             "answer": (
-                "Aqui está o resumo calculado com os dados disponíveis. "
-                "Não executei nenhuma alteração."
+                (
+                    "Para economizar, comece pelas maiores categorias de "
+                    "despesas e defina uma quantia sustentável para poupar. "
+                    "Não executei nenhuma alteração."
+                )
+                if savings_question
+                else (
+                    "Aqui está o resumo calculado com os dados disponíveis. "
+                    "Não executei nenhuma alteração."
+                )
             ),
             "classification": "analise_financeira",
             "facts": facts,

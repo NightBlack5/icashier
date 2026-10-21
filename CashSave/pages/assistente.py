@@ -111,41 +111,37 @@ def sidebar() -> rx.Component:
         rx.divider(),
 
         # Usuário
-        rx.hstack(
+        rx.box(
+            rx.hstack(
+                rx.avatar(
+                    src=AppState.avatar_url,
+                    fallback="U",
+                    size="2",
+                    radius="full",
+                ),
 
-            rx.avatar(
-                src=AppState.avatar_url,
-                fallback="U",
-                size="2",
-                radius="full",
-            ),
-
-            rx.vstack(
                 rx.text(
                     AppState.nome_usuario,
                     size="2",
                     weight="medium",
                     title=AppState.nome_usuario,
-                    width="0",
-                    max_width="100%",
                     flex="1",
+                    min_width="0",
                     overflow="hidden",
                     text_overflow="ellipsis",
                     white_space="nowrap",
                 ),
 
-                spacing="0",
-                align="start",
-                width="0",
-                flex="1",
+                align="center",
+                spacing="3",
+                width="100%",
                 min_width="0",
             ),
 
-            align="center",
-            spacing="3",
             width="100%",
-            min_width="0",
-            padding="0.5em 0.8em",
+            padding="0.65em 0.8em",
+            border_radius="10px",
+            background="var(--gray-3)",
         ),
 
         rx.button(
@@ -154,6 +150,7 @@ def sidebar() -> rx.Component:
             variant="soft",
             color_scheme="gray",
             width="100%",
+            justify_content="center",
         ),
 
         spacing="2",

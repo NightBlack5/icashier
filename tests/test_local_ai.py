@@ -206,11 +206,24 @@ class ValidationAndOrchestrationTests(unittest.TestCase):
         self.assertTrue(any("Transporte" in item for item in result["facts"]))
         client.chat.assert_not_called()
 
+    def test_answers_savings_questions_without_model_hallucinations(self):
+        client = Mock()
+        result = FinancialOrchestrator(client=client).answer(
+            "Como posso economizar dinheiro?",
+            [],
+            self.context,
+        )
+        self.assertEqual(result["classification"], "analise_financeira")
+        self.assertIn("economizar", result["answer"])
+        self.assertTrue(any("R$ 8,00" in item for item in result["facts"]))
+        self.assertFalse(any("R$ 850.000,00" in item for item in result["facts"]))
+        client.chat.assert_not_called()
+
     def test_generic_prompt_forbids_invented_identity(self):
         client = Mock()
         client.chat.return_value = VALID_RESPONSE
         FinancialOrchestrator(client=client).answer(
-            "Me dê uma dica para economizar.",
+            "Explique o que é uma reserva de emergência.",
             [],
             self.context,
         )
