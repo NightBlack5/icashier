@@ -23,6 +23,8 @@ query "auth/login" verb=POST {
       hash_password = $user.password
     } as $password_valid
 
+    // A precondition continues only when the password is valid.
+    // An invalid result stops the request before an auth token is created.
     precondition ($password_valid == true) {
       error_type = "accessdenied"
       error = "E-mail ou senha inválidos."
