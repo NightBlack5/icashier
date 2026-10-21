@@ -19,18 +19,18 @@ diretório, não os arquivos de exemplo em `xano/api/authentication/`.
 Publique também `table/recorrencias.xs` antes de publicar as quatro rotas de
 recorrência.
 
-No Xano, `precondition` dispara o erro quando a condição é verdadeira. No
-login, portanto, a definição correta é:
+No Xano, `precondition` continua o fluxo quando a condição é verdadeira e
+dispara o erro quando ela é falsa. No login, portanto, a definição correta é:
 
 ```xs
-precondition ($password_valid == false) {
+precondition ($password_valid == true) {
   error_type = "accessdenied"
   error = "E-mail ou senha inválidos."
 }
 ```
 
-Não use `$password_valid == true`: essa condição rejeita senhas válidas e
-permite que senhas inválidas sigam para a criação do token.
+Não use `$password_valid == false`: essa condição permite que senhas inválidas
+sigam para a criação do token e rejeita senhas válidas.
 
 ## Verificações obrigatórias
 
