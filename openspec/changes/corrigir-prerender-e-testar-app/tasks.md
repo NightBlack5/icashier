@@ -13,5 +13,5 @@
 
 ## 3. Verify production integration
 
-- [ ] 3.1 Start the app using the documented production command and verify `/` and every registered route in a browser, including the login state on protected routes and no unhandled server errors. Pending: routes load, but the Reflex event WebSocket still reports `Connection Error`.
+- [x] 3.1 Start the app using the documented production command and verify `/` and every registered route in a browser, including the login state on protected routes and no unhandled server errors. Verified on the production fullstack at port 3001 after the stale port 3000 process forced Reflex to use its fallback port; the event WebSocket connected and the `Connection Error` indicator remained hidden on all 11 routes.
 - [x] 3.2 Run the full unit suite, `reflex compile --dry`, and `openspec validate corrigir-prerender-e-testar-app`; record which Xano behaviors remain unverified without a dedicated test account.
