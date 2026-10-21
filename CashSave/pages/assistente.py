@@ -10,7 +10,7 @@ from .auth import auth_page
 
 MENU = [
     ("Visão Geral", "layout-dashboard", "/app"),
-    ("Assistente IA", "bot", "/assistente"),
+    ("Jarvis", "bot", "/assistente"),
     ("Finanças", "trending-up", "/financas"),
     ("Calendário", "calendar", "/calendario"),
     ("Preferências", "settings", "/perfil"),
@@ -125,31 +125,26 @@ def sidebar() -> rx.Component:
                     AppState.nome_usuario,
                     size="2",
                     weight="medium",
-                    width="100%",
+                    title=AppState.nome_usuario,
+                    width="0",
+                    max_width="100%",
+                    flex="1",
                     overflow="hidden",
                     text_overflow="ellipsis",
                     white_space="nowrap",
-                ),
-
-                rx.text(
-                    AppState.email_usuario,
-                    size="1",
-                    color_scheme="gray",
-                    width="100%",
-                    overflow="hidden",
-                    text_overflow="ellipsis",
-                    white_space="nowrap",
-                    title=AppState.email_usuario,
                 ),
 
                 spacing="0",
                 align="start",
-                width="100%",
+                width="0",
+                flex="1",
                 min_width="0",
             ),
 
             align="center",
             spacing="3",
+            width="100%",
+            min_width="0",
             padding="0.5em 0.8em",
         ),
 
@@ -276,7 +271,7 @@ def chat() -> rx.Component:
                 rx.vstack(
 
                     rx.heading(
-                        "Assistente Financeiro",
+                        "Jarvis",
                         size="4",
                     ),
 
@@ -295,8 +290,8 @@ def chat() -> rx.Component:
                 rx.badge(
                     rx.cond(
                         AppState.assistente_carregando,
-                        "Pensando...",
-                        "Online",
+                        "Consultando Ollama...",
+                        "Ollama local",
                     ),
                     color_scheme="green",
                     variant="soft",
@@ -340,38 +335,36 @@ def chat() -> rx.Component:
             ),
 
             # Campo de mensagem
-            rx.hstack(
-
-                rx.input(
-                    placeholder="Digite sua dúvida financeira...",
-                    value=AppState.assistente_mensagem,
-
-                    on_change=AppState.set_assistente_mensagem,
-
-                    size="3",
-                    width="100%",
-                    disabled=AppState.assistente_carregando,
-                ),
-
-                rx.button(
-                    rx.icon(
-                        "send",
-                        size=18,
+            rx.form(
+                rx.hstack(
+                    rx.input(
+                        placeholder="Digite sua dúvida financeira...",
+                        value=AppState.assistente_mensagem,
+                        on_change=AppState.set_assistente_mensagem,
+                        size="3",
+                        width="100%",
+                        disabled=AppState.assistente_carregando,
                     ),
-
-                    on_click=AppState.enviar_mensagem_assistente,
-
-                    size="3",
-                    color_scheme="green",
-                    disabled=AppState.assistente_carregando,
+                    rx.button(
+                        rx.icon(
+                            "send",
+                            size=18,
+                        ),
+                        type="submit",
+                        size="3",
+                        color_scheme="green",
+                        disabled=AppState.assistente_carregando,
+                    ),
+                    width="100%",
+                    spacing="3",
                 ),
-
+                on_submit=AppState.enviar_mensagem_assistente,
                 width="100%",
-                spacing="3",
             ),
 
             rx.text(
-                "O histórico desta conversa fica salvo na sua conta.",
+                "Você pode cadastrar despesas claras, como: "
+                "'gastei R$ 25,90 em transporte'. O Enter envia a mensagem.",
                 size="1",
                 color_scheme="gray",
             ),
@@ -512,7 +505,7 @@ def assistente() -> rx.Component:
                 rx.vstack(
 
                     rx.heading(
-                        "Assistente IA 🤖",
+                        "Jarvis 🤖",
                         size="8",
                     ),
 

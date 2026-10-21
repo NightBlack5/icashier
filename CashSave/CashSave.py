@@ -17,7 +17,7 @@ from .state import AppState
 
 MENU = [
     ("Visão Geral", "layout-dashboard", "/app"),
-    ("Assistente IA", "bot", "/assistente"),
+    ("Jarvis", "bot", "/assistente"),
     ("Finanças", "trending-up", "/financas"),
     ("Calendário", "calendar", "/calendario"),
     ("Preferências", "settings", "/perfil"),
@@ -143,31 +143,26 @@ def sidebar(rota_atual: str) -> rx.Component:
                     AppState.nome_usuario,
                     size="2",
                     weight="medium",
-                    width="100%",
+                    title=AppState.nome_usuario,
+                    width="0",
+                    max_width="100%",
+                    flex="1",
                     overflow="hidden",
                     text_overflow="ellipsis",
                     white_space="nowrap",
-                ),
-
-                rx.text(
-                    AppState.email_usuario,
-                    size="1",
-                    color_scheme="gray",
-                    width="100%",
-                    overflow="hidden",
-                    text_overflow="ellipsis",
-                    white_space="nowrap",
-                    title=AppState.email_usuario,
                 ),
 
                 spacing="0",
                 align="start",
-                width="100%",
+                width="0",
+                flex="1",
                 min_width="0",
             ),
 
             align="center",
             spacing="3",
+            width="100%",
+            min_width="0",
             padding="0.5em 0.8em",
         ),
 
@@ -829,7 +824,7 @@ def dashboard_conteudo() -> rx.Component:
                 rx.grid(
 
                     atalho(
-                        "Assistente IA",
+                        "Jarvis",
                         "Tire suas dúvidas financeiras",
                         "bot",
                         "purple",
@@ -969,15 +964,11 @@ def perfil() -> rx.Component:
                         ),
                     ),
                     rx.heading("Foto de perfil", size="4"),
-                    rx.cond(
-                        AppState.avatar_perfil_disponivel,
-                        rx.fragment(),
-                        rx.text(
-                            "O envio de fotos será habilitado após publicar "
-                            "os endpoints de avatar no Xano.",
-                            size="2",
-                            color_scheme="amber",
-                        ),
+                    rx.text(
+                        "Escolha uma imagem e clique em Enviar foto para atualizar "
+                        "seu avatar.",
+                        size="2",
+                        color_scheme="gray",
                     ),
                     rx.avatar(
                         src=AppState.avatar_url,
@@ -986,7 +977,15 @@ def perfil() -> rx.Component:
                         radius="full",
                     ),
                     rx.upload(
-                        rx.text("Escolher uma imagem (PNG, JPG ou WebP)"),
+                        rx.vstack(
+                            rx.text("Escolher uma imagem (PNG, JPG ou WebP)"),
+                            rx.text(
+                                rx.selected_files("profile-photo"),
+                                size="1",
+                                color_scheme="gray",
+                            ),
+                            spacing="1",
+                        ),
                         id="profile-photo",
                         accept={
                             "image/png": [".png"],
@@ -997,6 +996,9 @@ def perfil() -> rx.Component:
                         border="1px dashed var(--gray-7)",
                         padding="1em",
                         width="100%",
+                        on_drop=AppState.enviar_foto_perfil(
+                            rx.upload_files(upload_id="profile-photo")
+                        ),
                     ),
                     rx.button(
                         "Enviar foto",
@@ -1004,13 +1006,13 @@ def perfil() -> rx.Component:
                             rx.upload_files(upload_id="profile-photo")
                         ),
                         variant="outline",
-                        disabled=AppState.avatar_perfil_disponivel == False,
+                        disabled=AppState.autenticado == False,
                     ),
                     rx.button(
                         "Remover foto",
                         on_click=AppState.remover_foto_perfil,
                         variant="ghost",
-                        disabled=AppState.avatar_perfil_disponivel == False,
+                        disabled=AppState.autenticado == False,
                     ),
                     rx.button(
                         "Salvar preferências",
@@ -1088,7 +1090,7 @@ app.add_page(
 app.add_page(
     assistente,
     route="/assistente",
-    title="CashSave | Assistente IA",
+    title="CashSave | Jarvis",
     on_load=AppState.carregar_conversas_assistente,
 )
 

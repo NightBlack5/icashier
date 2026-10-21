@@ -16,6 +16,13 @@ from urllib.request import Request, urlopen
 import reflex as rx
 from dotenv import load_dotenv
 
+from .ai_services import (
+    ExpenseCommandError,
+    FinancialContextService,
+    FinancialOrchestrator,
+    OllamaError,
+    parse_expense_command,
+)
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 API_BASE_URL = os.getenv("CASH_SAVE_API_URL", "").rstrip("/")
@@ -66,7 +73,7 @@ def _send_request(
     if body is not None:
         headers["Content-Type"] = content_type
     if token:
-        headers["Authorization"] = f"Bearer {token}"
+        headers["Authorization"] = "Bearer " + token
 
     request = Request(
         f"{API_BASE_URL}/{path.lstrip('/')}",
@@ -193,6 +200,16 @@ def _formatar_telefone(value: str) -> str:
     return f"({ddd}) {local[:5]}-{local[5:]}"
 
 
+def _notificacao_ids_from_storage(value: str) -> list[str]:
+    try:
+        stored_ids = json.loads(value)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(stored_ids, list):
+        return []
+    return [item for item in stored_ids if isinstance(item, str)]
+
+
 def _proxima_data_recorrente(
     data: str,
     frequencia: str,
@@ -254,6 +271,63 @@ def _csv_safe_text(value: object) -> str:
     return text
 
 
+def _normalizar_conversas_assistente(value: object) -> list[dict]:
+    if not isinstance(value, list):
+        return []
+    conversas = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        try:
+            conversation_id = int(item.get("id", 0))
+        except (TypeError, ValueError):
+            continue
+        if conversation_id <= 0 or not isinstance(item.get("messages"), list):
+            continue
+        mensagens = []
+        for mensagem in item["messages"]:
+            if not isinstance(mensagem, dict):
+                continue
+            tipo = mensagem.get("tipo")
+            texto = mensagem.get("texto")
+            if tipo in {"usuario", "ia"} and isinstance(texto, str):
+                mensagens.append({"tipo": tipo, "texto": texto})
+        if mensagens:
+            conversas.append(
+                {
+                    "id": conversation_id,
+                    "title": str(item.get("title", ""))[:60],
+                    "messages": mensagens[-20:],
+                }
+            )
+    return conversas[:8]
+
+
+def _conversas_assistente_do_storage(
+    storage_value: str,
+    owner_key: str,
+) -> tuple[list[dict], int]:
+    try:
+        stored = json.loads(storage_value or "{}")
+    except (TypeError, json.JSONDecodeError):
+        return [], 0
+    if not isinstance(stored, dict):
+        return [], 0
+    owner_data = stored.get(owner_key, {})
+    if not isinstance(owner_data, dict):
+        return [], 0
+    conversas = _normalizar_conversas_assistente(
+        owner_data.get("conversations", [])
+    )
+    try:
+        active_id = int(owner_data.get("active_id", 0))
+    except (TypeError, ValueError):
+        active_id = 0
+    if active_id not in {int(item["id"]) for item in conversas}:
+        active_id = 0
+    return conversas, active_id
+
+
 class AppState(rx.State):
     auth_token: str = rx.Cookie(
         "",
@@ -262,7 +336,7 @@ class AppState(rx.State):
         same_site="strict",
         secure=os.getenv("CASH_SAVE_COOKIE_SECURE", "true").lower() == "true",
     )
-    usuario: dict[str, str] = {}
+    usuario: dict[str, object] = {}
     avatar_url: str = ""
     avatar_perfil_disponivel: bool = False
     auth_email: str = ""
@@ -337,9 +411,13 @@ class AppState(rx.State):
     transacao_filtro_periodo: str = "todas"
     transacao_filtro_categoria: str = "todas"
     transacao_filtro_conta: str = "todas"
-    notificacoes_descartadas: list[str] = rx.LocalStorage(
-        [],
+    notificacoes_descartadas: str = rx.LocalStorage(
+        "[]",
         name="cashsave_dismissed_notifications",
+    )
+    assistente_conversas_storage: str = rx.LocalStorage(
+        "{}",
+        name="cashsave_jarvis_conversations",
     )
     assistente_conversas: list[dict] = []
     assistente_conversa_id: int = 0
@@ -347,7 +425,7 @@ class AppState(rx.State):
         {
             "tipo": "ia",
             "texto": (
-                "Olá! Sou o assistente do CashSave. "
+                "Olá! Sou o Jarvis do CashSave. "
                 "Como posso ajudar você a organizar suas finanças?"
             ),
         }
@@ -361,11 +439,40 @@ class AppState(rx.State):
 
     @rx.var
     def nome_usuario(self) -> str:
-        return self.usuario.get("name", "Minha conta")
+        nome = self.usuario.get("name")
+        return nome if isinstance(nome, str) and nome else "Minha conta"
 
     @rx.var
     def email_usuario(self) -> str:
-        return self.usuario.get("email", "")
+        email = self.usuario.get("email")
+        return email if isinstance(email, str) else ""
+
+    def _assistente_owner_key(self) -> str:
+        user_id = self.usuario.get("id")
+        if user_id is not None:
+            return f"user:{user_id}"
+        email = self.usuario.get("email") or self.auth_email
+        return f"email:{str(email).strip().lower()}" if email else "default"
+
+    def _persistir_conversas_assistente(self):
+        try:
+            stored = json.loads(self.assistente_conversas_storage or "{}")
+        except (TypeError, json.JSONDecodeError):
+            stored = {}
+        if not isinstance(stored, dict):
+            stored = {}
+        owner_key = self._assistente_owner_key()
+        stored[owner_key] = {
+            "active_id": self.assistente_conversa_id,
+            "conversations": _normalizar_conversas_assistente(
+                self.assistente_conversas
+            ),
+        }
+        self.assistente_conversas_storage = json.dumps(
+            stored,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
 
     @rx.var
     def total_receitas(self) -> str:
@@ -510,7 +617,9 @@ class AppState(rx.State):
                     f"user-{self.usuario.get('id', '')}-"
                     f"vencimento-{conta.get('id')}"
                 )
-                if chave not in self.notificacoes_descartadas:
+                if chave not in _notificacao_ids_from_storage(
+                    self.notificacoes_descartadas
+                ):
                     notificacoes.append({
                         "id": chave,
                         "titulo": "Conta próxima do vencimento",
@@ -547,7 +656,9 @@ class AppState(rx.State):
                     f"user-{self.usuario.get('id', '')}-"
                     f"orcamento-{orcamento.get('id')}-{hoje:%Y-%m}"
                 )
-                if chave in self.notificacoes_descartadas:
+                if chave in _notificacao_ids_from_storage(
+                    self.notificacoes_descartadas
+                ):
                     continue
                 percentual = int(gastos * 100 / limite_centavos)
                 notificacoes.append({
@@ -575,7 +686,9 @@ class AppState(rx.State):
                 chave = (
                     f"user-{self.usuario.get('id', '')}-meta-{meta.get('id')}"
                 )
-                if chave in self.notificacoes_descartadas:
+                if chave in _notificacao_ids_from_storage(
+                    self.notificacoes_descartadas
+                ):
                     continue
                 notificacoes.append({
                     "id": chave,
@@ -727,11 +840,19 @@ class AppState(rx.State):
         return _formatar_centavos(centavos)
 
     @staticmethod
-    def _avatar_from_user(user: dict) -> str:
+    def _avatar_from_user(user: dict[str, object]) -> str:
         avatar = user.get("avatar_url", "")
+        if isinstance(avatar, str):
+            return avatar
         if isinstance(avatar, dict):
-            avatar = avatar.get("url", "")
-        return avatar if isinstance(avatar, str) else ""
+            for key in ("url", "public_url", "signed_url", "download_url", "link"):
+                value = avatar.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value
+            nested = avatar.get("file")
+            if isinstance(nested, dict):
+                return AppState._avatar_from_user({"avatar_url": nested})
+        return ""
 
     async def _api(
         self,
@@ -864,6 +985,15 @@ class AppState(rx.State):
         if self.auth_token:
             return rx.redirect("/app")
 
+    @staticmethod
+    def _mensagem_erro_login(error: XanoAPIError) -> str:
+        if error.status_code == 429:
+            return (
+                "Muitas tentativas de login em pouco tempo. "
+                "Aguarde cerca de 20 segundos e tente novamente."
+            )
+        return str(error)
+
     @rx.event
     async def autenticar(self):
         self.erro = ""
@@ -932,11 +1062,12 @@ class AppState(rx.State):
             self.auth_token = str(token)
             self.usuario = _as_record(response.get("user"))
             self.avatar_url = self._avatar_from_user(self.usuario)
+            self.avatar_perfil_disponivel = True
             self.auth_password = ""
             self.auth_password_confirmation = ""
             return rx.redirect("/app")
         except XanoAPIError as error:
-            self.erro = str(error)
+            self.erro = self._mensagem_erro_login(error)
         finally:
             self.carregando = False
 
@@ -986,7 +1117,7 @@ class AppState(rx.State):
 
             self.usuario = _as_record(dados.get("usuario"))
             self.avatar_url = self._avatar_from_user(self.usuario)
-            self.avatar_perfil_disponivel = "avatar_url" in self.usuario
+            self.avatar_perfil_disponivel = bool(self.auth_token)
             self.transacoes = _records_with_money(
                 dados.get("transacoes"),
                 "valor_centavos",
@@ -1115,8 +1246,15 @@ class AppState(rx.State):
 
     @rx.event
     def dispensar_notificacao(self, notificacao_id: str):
-        if notificacao_id not in self.notificacoes_descartadas:
-            self.notificacoes_descartadas.append(notificacao_id)
+        dismissed_ids = _notificacao_ids_from_storage(
+            self.notificacoes_descartadas
+        )
+        if notificacao_id not in dismissed_ids:
+            dismissed_ids.append(notificacao_id)
+            self.notificacoes_descartadas = json.dumps(
+                dismissed_ids,
+                separators=(",", ":"),
+            )
 
     @rx.event
     def exportar_transacoes_csv(self):
@@ -1741,8 +1879,8 @@ class AppState(rx.State):
 
     @rx.event
     async def enviar_foto_perfil(self, files: list[rx.UploadFile]):
-        if not self.avatar_perfil_disponivel:
-            self.erro = "Atualize os endpoints do Xano para habilitar fotos de perfil."
+        if not self.auth_token:
+            self.erro = "Entre na sua conta para alterar a foto de perfil."
             return
         if not files:
             self.erro = "Selecione uma imagem para enviar."
@@ -1788,8 +1926,8 @@ class AppState(rx.State):
 
     @rx.event
     async def remover_foto_perfil(self):
-        if not self.avatar_perfil_disponivel:
-            self.erro = "Atualize os endpoints do Xano para gerenciar fotos de perfil."
+        if not self.auth_token:
+            self.erro = "Entre na sua conta para remover a foto de perfil."
             return
         try:
             response = _as_record(
@@ -1833,58 +1971,61 @@ class AppState(rx.State):
             {
                 "tipo": "ia",
                 "texto": (
-                    "Olá! Sou o assistente do CashSave. "
+                    "Olá! Sou o Jarvis do CashSave. "
                     "Como posso ajudar você a organizar suas finanças?"
                 ),
             }
         ]
         self.assistente_mensagem = ""
         self.erro = ""
+        self._persistir_conversas_assistente()
 
     @rx.event
     async def carregar_conversas_assistente(self):
         if not self.auth_token:
             return rx.redirect("/login")
-        try:
-            response = await self._api("GET", "assistente/conversas")
-            self.assistente_conversas = _records(response)
-        except XanoAPIError as error:
-            self.erro = str(error)
-            if error.status_code == 401:
-                self._limpar_sessao()
-                self.erro = "Sua sessão expirou. Entre novamente."
-                return rx.redirect("/login")
-
-    @rx.event
-    async def abrir_conversa_assistente(self, conversation_id: int):
-        try:
-            response = _as_record(
-                await self._api(
-                    "GET",
-                    f"assistente/conversas/{conversation_id}",
-                )
+        resultado = await self._carregar_dados()
+        if resultado is not None:
+            return resultado
+        conversas, active_id = _conversas_assistente_do_storage(
+            self.assistente_conversas_storage,
+            self._assistente_owner_key(),
+        )
+        self.assistente_conversas = conversas
+        self.assistente_conversa_id = active_id
+        if active_id:
+            conversa = next(
+                item for item in conversas if int(item["id"]) == active_id
             )
-            messages = response.get("messages", [])
-            self.assistente_conversa_id = conversation_id
+            self.assistente_mensagens = list(conversa["messages"])
+        else:
             self.assistente_mensagens = [
                 {
-                    "tipo": "usuario" if item.get("role") == "user" else "ia",
-                    "texto": _message_text(item.get("content")),
+                    "tipo": "ia",
+                    "texto": (
+                        "Olá! Sou o Jarvis do CashSave. "
+                        "Como posso ajudar você a organizar suas finanças?"
+                    ),
                 }
-                for item in messages
-                if isinstance(item, dict)
-                and item.get("role") in {"user", "assistant"}
             ]
-            if not self.assistente_mensagens:
-                self.assistente_mensagens = [
-                    {
-                        "tipo": "ia",
-                        "texto": "Esta conversa ainda não tem mensagens.",
-                    }
-                ]
-            self.erro = ""
-        except XanoAPIError as error:
-            self.erro = str(error)
+        self.erro = ""
+
+    @rx.event
+    def abrir_conversa_assistente(self, conversation_id: int):
+        conversa = next(
+            (
+                item
+                for item in self.assistente_conversas
+                if int(item.get("id", 0)) == conversation_id
+            ),
+            None,
+        )
+        if conversa is None:
+            self.erro = "Conversa local não encontrada."
+            return
+        self.assistente_conversa_id = conversation_id
+        self.assistente_mensagens = list(conversa.get("messages", []))
+        self.erro = ""
 
     @rx.event
     async def enviar_mensagem_assistente(self):
@@ -1898,32 +2039,118 @@ class AppState(rx.State):
         self.assistente_carregando = True
         self.erro = ""
         try:
-            response = _as_record(
-                await self._api(
-                    "POST",
-                    "assistente/conversation",
+            parsed_expense = parse_expense_command(
+                texto,
+                self.categorias,
+                self.contas,
+            )
+            if parsed_expense is not None:
+                transacao = _as_record(
+                    await self._api(
+                        "POST",
+                        "transacoes",
+                        {
+                            "tipo": parsed_expense.tipo,
+                            "descricao": parsed_expense.description,
+                            "valor_centavos": parsed_expense.value_centavos,
+                            "data": parsed_expense.data,
+                            "categoria_id": parsed_expense.categoria_id,
+                            "conta_id": parsed_expense.conta_id,
+                        },
+                    )
+                )
+                if "id" not in transacao:
+                    raise XanoAPIError("O Xano não confirmou o lançamento.")
+                self.transacoes = _records_with_money(
+                    [transacao, *self.transacoes],
+                    "valor_centavos",
+                )
+                response = {
+                    "answer": (
+                        (
+                            "Receita cadastrada com sucesso: "
+                            if parsed_expense.tipo == "receita"
+                            else "Despesa cadastrada com sucesso: "
+                        )
+                        +
+                        f"{parsed_expense.description} no valor de "
+                        f"{_formatar_centavos(parsed_expense.value_centavos)}."
+                    ),
+                    "facts": [],
+                    "calculations": [],
+                    "estimates": [],
+                }
+            else:
+                context_service = FinancialContextService(
+                    transactions=self.transacoes,
+                    accounts=self.contas,
+                    categories=self.categorias,
+                    bills=self.contas_a_pagar,
+                    budgets=self.orcamentos,
+                    goals=self.metas,
+                    recurring=self.recorrencias,
+                )
+                history = [
                     {
-                        "conversation_id": self.assistente_conversa_id or None,
-                        "message": texto,
-                    },
-                )
-            )
-            conversation_id = response.get("conversation_id")
-            answer = _message_text(response.get("result"))
-            if not conversation_id or not answer:
-                raise XanoAPIError(
-                    "O assistente não retornou uma resposta válida."
-                )
-            self.assistente_conversa_id = int(conversation_id)
-            self.assistente_mensagens.extend(
-                [
-                    {"tipo": "usuario", "texto": texto},
-                    {"tipo": "ia", "texto": answer},
+                        "role": "user" if item.get("tipo") == "usuario" else "assistant",
+                        "content": str(item.get("texto", "")),
+                    }
+                    for item in self.assistente_mensagens[-8:]
                 ]
-            )
+                response = await asyncio.to_thread(
+                    FinancialOrchestrator().answer,
+                    texto,
+                    history,
+                    context_service,
+                )
+            answer = str(response["answer"])
+            details = []
+            for label, key in (
+                ("Fatos observados", "facts"),
+                ("Cálculos", "calculations"),
+                ("Estimativas e limites", "estimates"),
+            ):
+                values = response.get(key, [])
+                if values:
+                    details.append(f"{label}:\n- " + "\n- ".join(str(value) for value in values))
+            if details:
+                answer = answer + "\n\n" + "\n\n".join(details)
+
+            if not self.assistente_conversa_id:
+                existing_ids = [
+                    int(item.get("id", 0))
+                    for item in self.assistente_conversas
+                    if str(item.get("id", "")).isdigit()
+                ]
+                self.assistente_conversa_id = max(existing_ids, default=0) + 1
+            mensagens = [
+                *self.assistente_mensagens,
+                {"tipo": "usuario", "texto": texto},
+                {"tipo": "ia", "texto": answer},
+            ]
+            conversa = {
+                "id": self.assistente_conversa_id,
+                "title": texto[:60],
+                "messages": mensagens[-20:],
+            }
+            self.assistente_conversas = [
+                item
+                for item in self.assistente_conversas
+                if int(item.get("id", 0)) != self.assistente_conversa_id
+            ]
+            self.assistente_conversas = [
+                conversa,
+                *self.assistente_conversas,
+            ][
+                :8
+            ]
+            self.assistente_mensagens = mensagens[-20:]
             self.assistente_mensagem = ""
-            await self.carregar_conversas_assistente()
-        except XanoAPIError as error:
+            self._persistir_conversas_assistente()
+        except (OllamaError, ExpenseCommandError, XanoAPIError) as error:
             self.erro = str(error)
+        except (KeyError, TypeError, ValueError) as error:
+            self.erro = "A resposta da IA local não pôde ser processada."
+            raise RuntimeError("Resposta inválida da IA local.") from error
         finally:
             self.assistente_carregando = False

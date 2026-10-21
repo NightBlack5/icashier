@@ -1,0 +1,51 @@
+query "auth/login" verb=POST {
+  api_group = "cashsave"
+
+  input {
+    email email filters=trim|lower
+    password password
+  }
+
+  stack {
+    db.get user {
+      field_name = "email"
+      field_value = $input.email
+      output = ["id", "name", "email", "password"]
+    } as $user
+  
+    precondition ($user != null) {
+      error_type = "accessdenied"
+      error = "E-mail ou senha inválidos."
+    }
+  
+    security.check_password {
+      text_password = $input.password
+      hash_password = $user.password
+    } as $password_valid
+  
+    precondition ($password_valid) {
+      error_type = "accessdenied"
+      error = "E-mail ou senha inválidos."
+    }
+  
+    security.create_auth_token {
+      table = "user"
+      extras = {}
+      expiration = 86400
+      id = $user.id
+    } as $authToken
+  }
+
+  response = {
+    authToken: $authToken
+    user     : ```
+      {
+        id: $user.id
+        name: $user.name
+        email: $user.email
+      }
+      ```
+  }
+
+  guid = "j3xfCsZxD0h2qjy264yqT7zutYg"
+}

@@ -145,7 +145,7 @@ def recursos() -> rx.Component:
             rx.grid(
                 card_recurso(
                     "brain",
-                    "Assistente com IA",
+                    "Jarvis",
                     "Nossa inteligência artificial ajuda você a organizar suas "
                     "finanças de forma educativa e responsável.",
                 ),

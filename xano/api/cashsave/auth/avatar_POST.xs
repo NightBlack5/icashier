@@ -7,11 +7,17 @@ query "auth/avatar" verb=POST {
   }
 
   stack {
+    storage.create_image {
+      access = "public"
+      value = $input.avatar
+      filename = ""
+    } as $avatar_file
+
     db.patch user {
       field_name = "id"
       field_value = $auth.id
       data = {
-        avatar_url: $input.avatar
+        avatar_url: $avatar_file
       }
     } as $user
   }

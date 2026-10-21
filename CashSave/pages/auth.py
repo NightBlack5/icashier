@@ -283,57 +283,31 @@ def auth_page(is_registration: bool = False) -> rx.Component:
                         (
                             campo_confirmacao_senha(),
                             rx.hstack(
-                                rx.input(
-                                    type="checkbox",
-                                    checked=AppState.aceitou_termos,
-                                    on_change=AppState.set_aceitou_termos,
-                                    width="16px",
-                                    height="16px",
-                                    margin="0",
-                                    accent_color=GREEN,
-                                    cursor="pointer",
-                                    pointer_events="auto",
-                                ),
-                                rx.text(
+                                rx.checkbox(
                                     "Concordo com o uso dos meus dados para "
                                     "criar e proteger minha conta.",
+                                    checked=AppState.aceitou_termos,
+                                    on_change=AppState.set_aceitou_termos,
                                     size="1",
-                                    color=MUTED,
-                                    pointer_events="none",
+                                    color_scheme="green",
                                 ),
                                 align="center",
                                 spacing="2",
                                 width="100%",
-                                pointer_events="auto",
-                                position="relative",
-                                z_index="1",
                             ),
                         )
                         if is_registration
                         else rx.hstack(
                             rx.hstack(
-                                rx.input(
-                                    type="checkbox",
+                                rx.checkbox(
+                                    "Lembrar de mim",
                                     checked=AppState.lembrar_email == "true",
                                     on_change=AppState.set_lembrar_email,
-                                    width="16px",
-                                    height="16px",
-                                    margin="0",
-                                    accent_color=GREEN,
-                                    cursor="pointer",
-                                    pointer_events="auto",
-                                ),
-                                rx.text(
-                                    "Lembrar de mim",
                                     size="1",
-                                    color=MUTED,
-                                    pointer_events="none",
+                                    color_scheme="green",
                                 ),
                                 align="center",
                                 spacing="2",
-                                pointer_events="auto",
-                                position="relative",
-                                z_index="1",
                             ),
                             rx.spacer(),
                             rx.link(
@@ -347,9 +321,6 @@ def auth_page(is_registration: bool = False) -> rx.Component:
                             ),
                             width="100%",
                             align="center",
-                            pointer_events="auto",
-                            position="relative",
-                            z_index="1",
                         ),
                         rx.box(
                             rx.cond(
