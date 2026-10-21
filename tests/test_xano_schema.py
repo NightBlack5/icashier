@@ -8,8 +8,8 @@ class XanoAuthenticationSchemaTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-        self.assertIn("precondition ($password_valid == true)", schema)
-        self.assertNotIn("precondition ($password_valid == false)", schema)
+        self.assertIn("precondition ($password_valid == false)", schema)
+        self.assertNotIn("precondition ($password_valid == true)", schema)
 
 
 if __name__ == "__main__":
