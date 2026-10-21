@@ -17,21 +17,59 @@ Aplicativo de organização financeira feito com Reflex. A interface roda localm
 3. Inicie o app:
 
    ```powershell
+   $env:PYTHONIOENCODING = "utf-8"
    reflex run --env prod --single-port
    ```
 
 4. Abra o endereço local informado pelo Reflex (por padrão, `http://localhost:3000`).
 
 O modo `prod` aqui só altera como o app é servido localmente; não publica o site. Para desenvolvimento com recarga automática, use `--env dev`.
+No Windows, mantenha `PYTHONIOENCODING=utf-8` durante o comando de produção
+para que o progresso Unicode do build não falhe no console com a codificação
+legada `cp1252`.
 
 ## Verificações
 
 ```powershell
+$env:PYTHONIOENCODING = "utf-8"
 python -m unittest discover -s tests -v
 reflex compile --dry
 ```
 
 O app depende de endpoints publicados no Xano e de uma conta válida para testar fluxos autenticados. Os arquivos em `xano/` são a definição versionada das APIs e tabelas, não uma confirmação de que foram publicados no workspace remoto.
+
+### Smoke test das rotas
+
+Com o servidor em produção rodando, verifique no navegador as rotas abaixo:
+
+| Rota | Resultado esperado sem sessão |
+|---|---|
+| `/` | Landing page pública |
+| `/login` | Formulário de login |
+| `/cadastro` | Formulário de cadastro |
+| `/sobre` | Página institucional |
+| `/suporte` | FAQ e suporte |
+| `/apoiar` | Página de apoio |
+| `/app` | Estado não autenticado, sem erro de servidor |
+| `/assistente` | Estado não autenticado, sem erro de servidor |
+| `/financas` | Estado não autenticado, sem erro de servidor |
+| `/calendario` | Estado não autenticado, sem erro de servidor |
+| `/perfil` | Estado não autenticado, sem erro de servidor |
+
+As seis primeiras rotas são públicas e não devem depender do Xano para
+renderizar. As cinco últimas usam carregamento protegido e devem ser abertas
+sem sessão apenas para confirmar o estado de autenticação. O conjunto offline
+de testes valida o registro das rotas e impede chamadas Xano no componente da
+landing page:
+
+```powershell
+$env:PYTHONIOENCODING = "utf-8"
+python -m unittest discover -s tests -v
+```
+
+Esse smoke test não confirma cadastro, login, persistência, isolamento entre
+usuários, upload ou CRUD no Xano. Esses fluxos exigem uma conta de demonstração
+isolada e um workspace Xano publicado com as definições versionadas.
 
 ## Assistente financeira local com Ollama
 

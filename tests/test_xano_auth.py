@@ -1,5 +1,7 @@
 import unittest
+from io import BytesIO
 from unittest.mock import patch
+from urllib.error import HTTPError
 from urllib.request import Request
 
 from CashSave import state
@@ -36,6 +38,21 @@ class SendRequestAuthorizationTests(unittest.TestCase):
         request = self.urlopen.call_args.args[0]
         self.assertIsInstance(request, Request)
         self.assertIsNone(request.get_header("Authorization"))
+
+    def test_translates_http_errors_without_exposing_provider_details(self):
+        self.urlopen.side_effect = HTTPError(
+            "https://example.xano.io/api:cashsave/resumo",
+            401,
+            "Unauthorized",
+            {},
+            BytesIO(b'{"message":"token expired"}'),
+        )
+
+        with self.assertRaises(state.XanoAPIError) as raised:
+            state._send_request("GET", "resumo", None, "session-token")
+
+        self.assertEqual(raised.exception.status_code, 401)
+        self.assertEqual(str(raised.exception), "token expired")
 
 
 class LoginErrorMessageTests(unittest.TestCase):
