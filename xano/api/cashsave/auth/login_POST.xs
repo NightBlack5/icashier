@@ -23,7 +23,7 @@ query "auth/login" verb=POST {
       hash_password = $user.password
     } as $password_valid
 
-    precondition ($password_valid == false) {
+    precondition ($password_valid == true) {
       error_type = "accessdenied"
       error = "E-mail ou senha inválidos."
     }

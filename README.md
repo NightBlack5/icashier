@@ -38,6 +38,13 @@ reflex compile --dry
 
 O app depende de endpoints publicados no Xano e de uma conta válida para testar fluxos autenticados. Os arquivos em `xano/` são a definição versionada das APIs e tabelas, não uma confirmação de que foram publicados no workspace remoto.
 
+Se o login remoto aceitar uma senha incorreta ou o resumo retornar apenas parte
+dos campos, publique novamente no workspace Xano os arquivos de
+`xano/api/cashsave/` e confirme a publicação de `auth/login`, `resumo` e
+`recorrencias`. O cliente possui fallback para os endpoints financeiros
+individuais, mas não pode corrigir uma versão antiga publicada sem acesso
+administrativo ao Xano.
+
 ### Smoke test das rotas
 
 Com o servidor em produção rodando, verifique no navegador as rotas abaixo:
