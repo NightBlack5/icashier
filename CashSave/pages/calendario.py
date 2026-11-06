@@ -3,9 +3,9 @@ from datetime import date
 
 import reflex as rx
 
+from ..components.layout import app_layout
 from ..state import AppState
 from .auth import auth_page
-from .financas import sidebar
 
 
 class CalendarioState(rx.State):
@@ -316,11 +316,10 @@ def proximas_contas() -> rx.Component:
             ),
             rx.input(
                 placeholder="Valor em reais",
-                type="number",
-                min="0.01",
-                step="0.01",
+                type="text",
                 value=AppState.conta_valor,
                 on_change=AppState.set_conta_valor,
+                on_blur=AppState.formatar_conta_valor,
             ),
             rx.input(
                 type="date",
@@ -386,7 +385,7 @@ def proximas_contas() -> rx.Component:
         ),
 
         width="100%",
-        min_width="340px",
+        min_width="0",
         padding="1.5em",
         border_radius="16px",
     )
@@ -405,7 +404,7 @@ def conteudo_calendario() -> rx.Component:
             calendario_mensal(),
             proximas_contas(),
 
-            columns="2fr 1fr",
+            columns=rx.breakpoints(initial="1", lg="2fr 1fr"),
             gap="1.5em",
             width="100%",
             align_items="start",
@@ -419,19 +418,13 @@ def conteudo_calendario() -> rx.Component:
 def calendario_page() -> rx.Component:
     return rx.cond(
         AppState.autenticado,
-        rx.hstack(
-            sidebar(),
+        app_layout(
+            "/calendario",
             rx.box(
                 conteudo_calendario(),
-                padding="2em",
                 width="100%",
                 min_width="0",
             ),
-            width="100%",
-            min_height="100vh",
-            spacing="0",
-            align="start",
-            background="#0f0f0f",
         ),
         auth_page(),
     )

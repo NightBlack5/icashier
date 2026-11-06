@@ -1,5 +1,6 @@
 import reflex as rx
 
+from ..components.layout import app_layout
 from ..state import AppState
 from .auth import auth_page
 
@@ -487,68 +488,34 @@ def dicas() -> rx.Component:
 # ============================================================
 
 def assistente() -> rx.Component:
-
     return rx.cond(
         AppState.autenticado,
-        rx.hstack(
-
-            sidebar(),
-
-            rx.box(
-
+        app_layout(
+            "/assistente",
+            rx.vstack(
                 rx.vstack(
-
-                # Título
-                rx.vstack(
-
-                    rx.heading(
-                        "Jarvis 🤖",
-                        size="8",
-                    ),
-
+                    rx.heading("Jarvis", size="7"),
                     rx.text(
                         "Converse com seu assistente financeiro pessoal.",
                         color_scheme="gray",
                         size="3",
                     ),
-
                     spacing="1",
                     align="start",
                 ),
-
-                # Conteúdo
                 rx.hstack(
-
-                    rx.box(
-                        chat(),
-                        flex="3",
-                        min_width="0",
-                    ),
-
-                    rx.box(
-                        dicas(),
-                        flex="1",
-                        min_width="250px",
-                    ),
-
+                    rx.box(chat(), flex="3", min_width="0", width="100%"),
+                    rx.box(dicas(), flex="1", min_width="0", width="100%"),
                     spacing="5",
                     align="start",
                     width="100%",
+                    flex_direction=rx.breakpoints(initial="column", lg="row"),
                 ),
-
                 spacing="5",
                 align="start",
                 width="100%",
-            ),
-
-                padding="2em",
-                width="100%",
                 min_width="0",
             ),
-
-            spacing="0",
-            align="start",
-            width="100%",
         ),
         auth_page(),
     )

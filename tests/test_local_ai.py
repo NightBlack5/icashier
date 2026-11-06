@@ -14,6 +14,7 @@ from CashSave.ai_services import (
     OllamaSettings,
     OllamaUnavailableError,
     parse_expense_command,
+    parse_transaction_batch,
     validate_ai_response,
 )
 
@@ -127,6 +128,58 @@ class OllamaClientTests(unittest.TestCase):
 
 
 class ExpenseCommandTests(unittest.TestCase):
+    def test_parses_mixed_income_and_expenses_before_answering_question(self):
+        result = parse_transaction_batch(
+            (
+                "Recebi R$ 2.500 de salário este mês. Gastei R$ 850 de aluguel, "
+                "R$ 420 de mercado, R$ 180 de transporte, R$ 120 de internet "
+                "e celular e R$ 250 com lazer. Quanto sobrou do meu salário e "
+                "qual foi meu gasto total?"
+            ),
+            [{"id": 4, "nome": "transporte"}],
+            [],
+        )
+
+        self.assertEqual(
+            [
+                (item.tipo, item.description, item.value_centavos, item.categoria_id)
+                for item in result
+            ],
+            [
+                ("receita", "salário", 250000, None),
+                ("despesa", "aluguel", 85000, None),
+                ("despesa", "mercado", 42000, None),
+                ("despesa", "transporte", 18000, 4),
+                ("despesa", "internet e celular", 12000, None),
+                ("despesa", "lazer", 25000, None),
+            ],
+        )
+
+    def test_batch_parser_keeps_query_only_messages_read_only(self):
+        self.assertIsNone(
+            parse_transaction_batch("Quanto gastei no mercado?", [], [])
+        )
+
+    def test_batch_parser_validates_all_descriptions_before_any_write(self):
+        with self.assertRaises(ExpenseCommandError):
+            parse_transaction_batch(
+                "Recebi R$ 2.500 de salário e gastei R$ 50",
+                [],
+                [],
+            )
+
+    def test_batch_parser_rejects_zero_value(self):
+        with self.assertRaises(ExpenseCommandError):
+            parse_transaction_batch("Gastei R$ 0 em café", [], [])
+
+    def test_legacy_parser_does_not_silently_drop_batch_items(self):
+        with self.assertRaises(ExpenseCommandError):
+            parse_expense_command(
+                "Gastei R$ 20 em lanche e R$ 15 em café",
+                [],
+                [],
+            )
+
     def test_parses_expense_with_category(self):
         result = parse_expense_command(
             "Hoje gastei R$ 25,90 em transporte",
@@ -215,9 +268,58 @@ class ValidationAndOrchestrationTests(unittest.TestCase):
         )
         self.assertEqual(result["classification"], "analise_financeira")
         self.assertIn("economizar", result["answer"])
+        self.assertIn("Seu maior gasto atual", result["answer"])
+        self.assertNotIn("Sem categoria", result["answer"])
         self.assertTrue(any("R$ 8,00" in item for item in result["facts"]))
         self.assertFalse(any("R$ 850.000,00" in item for item in result["facts"]))
         client.chat.assert_not_called()
+
+    def test_answers_savings_questions_without_category_more_naturally(self):
+        client = Mock()
+        uncategorized_context = FinancialContextService(
+            transactions=[
+                {
+                    "tipo": "despesa",
+                    "valor_centavos": 2590,
+                    "data": "2026-10-19",
+                }
+            ],
+            accounts=[],
+            categories=[],
+            bills=[],
+            budgets=[],
+            goals=[],
+            recurring=[],
+        )
+        result = FinancialOrchestrator(client=client).answer(
+            "Como posso economizar dinheiro?",
+            [],
+            uncategorized_context,
+        )
+        self.assertIn("Seu maior gasto atual foi de", result["answer"])
+        self.assertNotIn("Sem categoria", result["answer"])
+        client.chat.assert_not_called()
+
+    def test_answers_are_contextualized_with_user_spending(self):
+        client = Mock()
+        result = FinancialOrchestrator(client=client).answer(
+            "Como posso economizar dinheiro?",
+            [],
+            self.context,
+        )
+        self.assertIn("Transporte", result["answer"])
+        self.assertIn("R$ 8,00", result["answer"])
+        client.chat.assert_not_called()
+
+    def test_answers_use_correct_language_for_no_write_action(self):
+        client = Mock()
+        result = FinancialOrchestrator(client=client).answer(
+            "Como posso economizar dinheiro?",
+            [],
+            self.context,
+        )
+        self.assertIn("realizei", result["answer"].lower())
+        self.assertNotIn("executei", result["answer"].lower())
 
     def test_generic_prompt_forbids_invented_identity(self):
         client = Mock()

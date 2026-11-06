@@ -29,16 +29,31 @@ The phone field SHALL format Brazilian numbers as the user types, supporting bot
 
 ### Requirement: Sign in to an account
 
-The application SHALL allow a visitor to sign in using an email and password, retain the email only when the visitor selects “Lembrar de mim”, and require a token returned by Xano before treating sign-in as successful.
+The application SHALL allow a visitor to sign in using an email and password, retain the email only when the visitor selects “Lembrar de mim”, and require a token returned by Xano before treating sign-in as successful. Before sending the login request, it SHALL trim and lowercase the email and trim the password, reject either credential when empty after normalization, and send the password as a plain string in a JSON request without client-side hashing. On failure it SHALL display a friendly API message when available and always clear the loading state.
 
 #### Scenario: Successful sign-in
 
-- **WHEN** Xano accepts the submitted email and password and returns an authentication token
-- **THEN** the application stores the session and directs the user to the authenticated application
+- **WHEN** a visitor submits an email and password with surrounding whitespace and Xano accepts the normalized credentials and returns an authentication token and user
+- **THEN** the application sends a JSON request to `auth/login` with a trimmed lowercase email and trimmed, unhashed password, stores the returned session and user data, and directs the user to the authenticated application
 
-#### Scenario: Sign-in without credentials or token
+#### Scenario: Sign-in with credentials empty after normalization
 
-- **WHEN** the email or password is empty, or Xano does not return an authentication token
+- **WHEN** the email or password contains only whitespace
+- **THEN** the application displays a validation error and does not send the login request
+
+#### Scenario: Sign-in rejected by Xano
+
+- **WHEN** Xano rejects the credentials with an HTTP error and provides a friendly message
+- **THEN** the application displays that message and clears the loading state
+
+#### Scenario: Successful sign-in without a token
+
+- **WHEN** Xano accepts the request but does not return an authentication token
+- **THEN** the application displays an error and does not establish an authenticated session
+
+#### Scenario: Sign-in without credentials
+
+- **WHEN** the email or password is empty
 - **THEN** the application reports an error and does not establish an authenticated session
 
 ### Requirement: Manage the authenticated user's profile photo

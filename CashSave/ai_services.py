@@ -2,7 +2,7 @@ import json
 import os
 import re
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin, urlsplit
@@ -35,62 +35,452 @@ class ParsedExpense:
     tipo: str = "despesa"
 
 
+@dataclass(frozen=True)
+class ParsedPayableBill:
+    description: str
+    value_centavos: int | None
+    data_vencimento: str | None
+    categoria_id: int | None = None
+    conta_id: int | None = None
+
+
+_MONEY_PATTERN = re.compile(
+    r"(?:r\$\s*)?(\d+(?:[.,]\d{3})*(?:[.,]\d{1,2})?)"
+    r"\s*(milh(?:ão|oes)|mil|reais?|rs?)?\b",
+    re.IGNORECASE,
+)
+_PAYABLE_INTENT_PATTERN = re.compile(
+    r"\b(?:conta\s+(?:a|para)\s+pagar|contas\s+(?:a|para)\s+pagar|"
+    r"boleto\s+(?:a|para)\s+pagar|conta\s+pendente|"
+    r"tenho\s+(?:uma\s+)?conta\b|"
+    r"(?:cadastre|cadastrar|registre|registrar|crie|criar|"
+    r"adicione|adicionar)\s+(?:uma\s+)?(?:conta|boleto|fatura))\b",
+    re.IGNORECASE,
+)
+_EXPLICIT_BILL_ACTION_PATTERN = re.compile(
+    r"\b(?:apague|exclua|delete|remova|pague|quitei|quite)\b"
+    r"(?:(?!\b(?:conta|boleto|fatura)\b).){0,45}"
+    r"\b(?:conta|boleto|fatura)\b",
+    re.IGNORECASE,
+)
+_BILL_NOUN_PATTERN = re.compile(r"\b(?:conta|boleto|fatura)\b", re.IGNORECASE)
+_BILL_LEAD_PATTERN = re.compile(
+    r"^\s*(?:(?:eu\s+)?(?:tenho|tem|há|existe)\s+)?"
+    r"(?:(?:uma|um|a|o)\s+)?",
+    re.IGNORECASE,
+)
+_BILL_PAYMENT_WORDING = re.compile(
+    r"\b(?:a\s+pagar|para\s+pagar|pendente|apagar)\b",
+    re.IGNORECASE,
+)
+_BR_DATE_PATTERN = re.compile(
+    r"\b(?P<day>\d{1,2})[/-](?P<month>\d{1,2})"
+    r"(?:[/-](?P<year>20\d{2}))?\b"
+)
+_ISO_DATE_PATTERN = re.compile(
+    r"\b(?P<year>20\d{2})-(?P<month>\d{1,2})-(?P<day>\d{1,2})\b"
+)
+_DAY_DATE_PATTERN = re.compile(
+    r"\b(?:vence(?:mento)?\s+(?:no\s+)?|dia\s+)(?:dia\s+)?"
+    r"(?P<day>\d{1,2})\b"
+)
+_TRANSACTION_MARKERS = (
+    (
+        "receita",
+        re.compile(
+            r"\b(?:recebi|recebo|receber|ganhei|ganho|faturei|"
+            r"sal[aá]rio|renda|receita|entrada|entrou|caiu)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "despesa",
+        re.compile(
+            r"\b(?:gastei|gasto|gastando|paguei|pago|pagar|pagando|"
+            r"comprei|compra|despesa|despesas|lancei|lan[çc]ar|"
+            r"registre|registrei|cadastre|cadastrei|adicione|adicionei)\b",
+            re.IGNORECASE,
+        ),
+    ),
+)
+_TRANSACTION_VERB_PATTERN = re.compile(
+    r"\b(?:recebi|recebo|receber|ganhei|ganho|faturei|gastei|gasto|"
+    r"gastando|paguei|pago|pagar|pagando|comprei|lancei|lan[çc]ar|"
+    r"registre|registrei|cadastre|cadastrei|adicione|adicionei)\b",
+    re.IGNORECASE,
+)
+_WRITE_INTENT_PATTERN = re.compile(
+    r"\b(?:cadastre|cadastrar|registre|registrar|lance|lançar|lancar|"
+    r"adicione|adicionar|crie|criar)\b",
+    re.IGNORECASE,
+)
+_QUESTION_START_PATTERN = re.compile(
+    r"^\s*(?:quanto|qual|como|onde|por que|porque|quando)\b",
+    re.IGNORECASE,
+)
+_FOLLOWUP_QUESTION_PATTERN = re.compile(
+    r"\b(?:quanto sobrou|quanto restou|qual foi|quanto foi|"
+    r"qual categoria|qual foi meu gasto)\b",
+    re.IGNORECASE,
+)
+
+
+def parse_payable_bill(
+    text: str,
+    categories: list[dict],
+    accounts: list[dict],
+) -> ParsedPayableBill | None:
+    normalized = " ".join(text.casefold().split())
+    intent_match = _PAYABLE_INTENT_PATTERN.search(normalized)
+    if not intent_match:
+        return None
+
+    explicit_action = _EXPLICIT_BILL_ACTION_PATTERN.search(normalized)
+    colloquial_create = (
+        re.search(r"\btenho\s+(?:uma\s+)?conta\b", normalized)
+        and re.search(r"\bapagar\s+(?:a\s+)?conta\b", normalized)
+    )
+    if explicit_action and not colloquial_create:
+        return None
+
+    due_date, date_spans = _parse_bill_due_date(normalized)
+    amount_text = normalized
+    for start, end in reversed(date_spans):
+        amount_text = amount_text[:start] + (" " * (end - start)) + amount_text[end:]
+    amount_match = _MONEY_PATTERN.search(amount_text)
+    value_centavos = None
+    if amount_match:
+        try:
+            amount = _parse_brazilian_amount(
+                amount_match.group(1),
+                amount_match.group(2).casefold() if amount_match.group(2) else None,
+            )
+            value_centavos = int((amount * 100).quantize(Decimal("1")))
+        except (InvalidOperation, ValueError) as error:
+            raise ExpenseCommandError("O valor da conta não é válido.") from error
+        if value_centavos <= 0:
+            raise ExpenseCommandError(
+                "O valor da conta precisa ser maior que zero."
+            )
+
+    noun_matches = list(_BILL_NOUN_PATTERN.finditer(normalized))
+    description = ""
+    if noun_matches:
+        last_noun = noun_matches[-1]
+        description_end = amount_match.start() if amount_match else len(normalized)
+        description_source = normalized[last_noun.end() : description_end]
+        for start, end in reversed(date_spans):
+            relative_start = max(0, start - last_noun.end())
+            relative_end = max(0, end - last_noun.end())
+            description_source = (
+                description_source[:relative_start]
+                + (" " * (relative_end - relative_start))
+                + description_source[relative_end:]
+            )
+        description_source = _BILL_PAYMENT_WORDING.sub(" ", description_source)
+        description_source = re.sub(
+            r"^\s*(?:de|do|da|dos|das|para|no|na)\s+",
+            "",
+            description_source,
+        )
+        description_source = re.sub(
+            r"\s+(?:de|do|da|dos|das|para|vence|vencimento)\s*$",
+            "",
+            description_source,
+        )
+        description = " ".join(description_source.strip(" .,:;-\n").split())
+        if description:
+            description = f"Conta de {description}"[:160]
+
+    category_id = (
+        _resolve_named_record(description, categories, "categoria")
+        if description
+        else None
+    )
+    account_id = (
+        _resolve_named_record(description, accounts, "conta")
+        if description
+        else None
+    )
+    return ParsedPayableBill(
+        description=description,
+        value_centavos=value_centavos,
+        data_vencimento=due_date,
+        categoria_id=category_id,
+        conta_id=account_id,
+    )
+
+
+def _parse_bill_due_date(text: str) -> tuple[str | None, list[tuple[int, int]]]:
+    date_matches: list[tuple[re.Match, str]] = []
+    for pattern, kind in (
+        (_ISO_DATE_PATTERN, "iso"),
+        (_BR_DATE_PATTERN, "br"),
+    ):
+        for match in pattern.finditer(text):
+            date_matches.append((match, kind))
+    if date_matches:
+        match, kind = date_matches[0]
+        if kind == "iso":
+            year, month, day = (
+                int(match.group("year")),
+                int(match.group("month")),
+                int(match.group("day")),
+            )
+        else:
+            day, month = int(match.group("day")), int(match.group("month"))
+            year = int(match.group("year")) if match.group("year") else date.today().year
+            if not match.group("year") and date(year, month, day) < date.today():
+                year += 1
+        try:
+            parsed_date = date(year, month, day)
+        except ValueError as error:
+            raise ExpenseCommandError("A data de vencimento não é válida.") from error
+        return parsed_date.isoformat(), [(match.start(), match.end())]
+
+    day_match = _DAY_DATE_PATTERN.search(text)
+    if day_match:
+        day = int(day_match.group("day"))
+        today = date.today()
+        try:
+            year, month = today.year, today.month
+            if day < today.day:
+                month += 1
+                if month > 12:
+                    month = 1
+                    year += 1
+            parsed_date = date(year, month, day)
+        except ValueError as error:
+            raise ExpenseCommandError("O dia de vencimento não é válido.") from error
+        return parsed_date.isoformat(), [(day_match.start(), day_match.end())]
+
+    if re.search(r"\b(?:amanh[ãa]|tomorrow)\b", text):
+        return (date.today() + timedelta(days=1)).isoformat(), []
+    if re.search(r"\bhoje\b", text):
+        return date.today().isoformat(), []
+    return None, []
+
+
+def complete_payable_bill(
+    bill: ParsedPayableBill,
+    text: str,
+    categories: list[dict],
+    accounts: list[dict],
+) -> ParsedPayableBill:
+    normalized = text.casefold()
+    due_date, date_spans = _parse_bill_due_date(normalized)
+    value_centavos = bill.value_centavos
+    description = bill.description
+
+    amount_text = normalized
+    for start, end in reversed(date_spans):
+        amount_text = amount_text[:start] + (" " * (end - start)) + amount_text[end:]
+    amount_match = _MONEY_PATTERN.search(amount_text)
+    if value_centavos is None and amount_match:
+        amount = _parse_brazilian_amount(
+            amount_match.group(1),
+            amount_match.group(2).casefold() if amount_match.group(2) else None,
+        )
+        value_centavos = int((amount * 100).quantize(Decimal("1")))
+        if value_centavos <= 0:
+            raise ExpenseCommandError(
+                "O valor da conta precisa ser maior que zero."
+            )
+
+    if not description:
+        follow_up = normalized
+        for start, end in reversed(date_spans):
+            follow_up = (
+                follow_up[:start]
+                + (" " * (end - start))
+                + follow_up[end:]
+            )
+        follow_up = re.sub(
+            r"\b(?:vencimento|vence|para|no dia|dia|hoje|amanh[ãa])\b",
+            " ",
+            follow_up,
+        )
+        if amount_match:
+            follow_up = (
+                follow_up[: amount_match.start()]
+                + follow_up[amount_match.end() :]
+            )
+        follow_up = re.sub(
+            r"^\s*conta\s+(?:de|do|da|dos|das)\s+",
+            "",
+            follow_up,
+        )
+        follow_up = re.sub(r"^\s*(?:de|do|da|dos|das)\s+", "", follow_up)
+        description = " ".join(follow_up.strip(" .,:;-\n").split())
+        if description:
+            description = f"Conta de {description}"[:160]
+
+    return ParsedPayableBill(
+        description=description,
+        value_centavos=value_centavos,
+        data_vencimento=due_date or bill.data_vencimento,
+        categoria_id=(
+            _resolve_named_record(description, categories, "categoria")
+            if description
+            else bill.categoria_id
+        ),
+        conta_id=(
+            _resolve_named_record(description, accounts, "conta")
+            if description
+            else bill.conta_id
+        ),
+    )
+
+
+def parse_transaction_batch(
+    text: str,
+    categories: list[dict],
+    accounts: list[dict],
+) -> list[ParsedExpense] | None:
+    normalized = " ".join(text.casefold().split()).split("?", maxsplit=1)[0]
+    if _QUESTION_START_PATTERN.search(normalized):
+        return None
+    followup_question = _FOLLOWUP_QUESTION_PATTERN.search(normalized)
+    if followup_question:
+        normalized = normalized[: followup_question.start()].rstrip(" ,.;:")
+    markers = sorted(
+        (
+            (match.start(), match.end(), transaction_type)
+            for transaction_type, pattern in _TRANSACTION_MARKERS
+            for match in pattern.finditer(normalized)
+        ),
+        key=lambda marker: marker[0],
+    )
+    if not markers:
+        return None
+
+    amounts = list(_MONEY_PATTERN.finditer(normalized))
+    amounts = [
+        amount
+        for amount in amounts
+        if not re.search(
+            r"\bdia\s*$",
+            normalized[max(0, amount.start() - 8) : amount.start()],
+        )
+    ]
+    if not amounts:
+        if _WRITE_INTENT_PATTERN.search(normalized):
+            raise ExpenseCommandError(
+                "Informe o valor da transação, por exemplo: "
+                "'gastei R$ 25,90 em transporte'."
+            )
+        return None
+
+    transactions = []
+    previous_amount_end = 0
+    for amount_index, amount_match in enumerate(amounts):
+        applicable_markers = [
+            marker for marker in markers if marker[1] <= amount_match.start()
+        ]
+        if not applicable_markers:
+            previous_amount_end = amount_match.end()
+            continue
+        marker_start, marker_end, transaction_type = applicable_markers[-1]
+        next_amount_start = (
+            amounts[amount_index + 1].start()
+            if amount_index + 1 < len(amounts)
+            else len(normalized)
+        )
+        next_action = _TRANSACTION_VERB_PATTERN.search(
+            normalized,
+            amount_match.end(),
+            next_amount_start,
+        )
+        description_end = next_action.start() if next_action else next_amount_start
+        suffix_description = _clean_transaction_description(
+            normalized[amount_match.end() : description_end]
+        )
+        prefix_start = max(marker_end, previous_amount_end)
+        prefix_description = _clean_transaction_description(
+            normalized[prefix_start : amount_match.start()]
+        )
+        description = suffix_description or prefix_description
+        previous_amount_end = amount_match.end()
+        if not description:
+            raise ExpenseCommandError(
+                "Informe uma descrição para cada lançamento financeiro."
+            )
+
+        try:
+            amount = _parse_brazilian_amount(
+                amount_match.group(1),
+                amount_match.group(2).casefold() if amount_match.group(2) else None,
+            )
+            value_centavos = int((amount * 100).quantize(Decimal("1")))
+        except (InvalidOperation, ValueError) as error:
+            raise ExpenseCommandError("O valor informado não é válido.") from error
+        if value_centavos <= 0:
+            raise ExpenseCommandError(
+                "O valor de cada transação deve ser maior que zero."
+            )
+
+        transaction_context_start = normalized.rfind(".", 0, marker_start) + 1
+        transaction_context = normalized[
+            transaction_context_start : description_end
+        ]
+        transaction_date = date.today()
+        if "ontem" in transaction_context:
+            transaction_date -= timedelta(days=1)
+        transactions.append(
+            ParsedExpense(
+                description=description[:160],
+                value_centavos=value_centavos,
+                data=transaction_date.isoformat(),
+                categoria_id=_resolve_named_record(
+                    description,
+                    categories,
+                    "categoria",
+                ),
+                conta_id=_resolve_named_record(description, accounts, "conta"),
+                tipo=transaction_type,
+            )
+        )
+
+    if not transactions:
+        if _WRITE_INTENT_PATTERN.search(normalized):
+            raise ExpenseCommandError(
+                "Não encontrei um valor associado a um lançamento financeiro."
+            )
+        return None
+    return transactions
+
+
 def parse_expense_command(
     text: str,
     categories: list[dict],
     accounts: list[dict],
 ) -> ParsedExpense | None:
-    normalized = " ".join(text.casefold().split())
-    if normalized.startswith(("quanto ", "qual ", "como ", "onde ")):
+    transactions = parse_transaction_batch(text, categories, accounts)
+    if not transactions:
         return None
-    tipo = _transaction_type(normalized)
-    if tipo is None:
-        return None
-
-    amount_match = re.search(
-        r"(?:r\$\s*)?(\d+(?:[.,]\d{3})*(?:[.,]\d{1,2})?)"
-        r"\s*(milh(?:ão|oes)|mil|reais?|rs?)?\b",
-        normalized,
-    )
-    if not amount_match:
+    if len(transactions) > 1:
         raise ExpenseCommandError(
-            "Informe o valor da despesa, por exemplo: 'gastei R$ 25,90 em transporte'."
+            "A mensagem contém vários lançamentos; use o parser de lote."
         )
-    try:
-        amount = _parse_brazilian_amount(
-            amount_match.group(1),
-            amount_match.group(2),
-        )
-        value_centavos = int((amount * 100).quantize(Decimal("1")))
-    except (InvalidOperation, ValueError) as error:
-        raise ExpenseCommandError("O valor informado não é válido.") from error
-    if value_centavos <= 0:
-        raise ExpenseCommandError(        "O valor da transação deve ser maior que zero.")
+    return transactions[0]
 
-    description = normalized[amount_match.end() :].strip(" .,:;-")
+
+def _clean_transaction_description(text: str) -> str:
+    description = text.strip(" .,:;-\n")
     description = re.sub(
-        r"^(?:(?:reais?|rs?)\b\s*)?(?:em|de|com)\s*",
+        r"^(?:(?:e|de|do|da|dos|das|com|em|no|na|nos|nas|"
+        r"reais?|rs?)\b\s*)+",
         "",
         description,
-    ).strip(" .,:;-")
-    description = re.sub(r"\b(?:hoje|ontem)\b", "", description).strip(" .,:;-")
-    if not description:
-        raise ExpenseCommandError("Informe uma descrição para a transação.")
-
-    data = date.today()
-    if "ontem" in normalized:
-        data -= timedelta(days=1)
-
-    categoria_id = _resolve_named_record(description, categories, "categoria")
-    conta_id = _resolve_named_record(description, accounts, "conta")
-    return ParsedExpense(
-        description=description[:160],
-        value_centavos=value_centavos,
-        data=data.isoformat(),
-        categoria_id=categoria_id,
-        conta_id=conta_id,
-        tipo=tipo,
     )
+    description = re.sub(
+        r"\b(?:este mês|neste mês|esse mês|hoje|ontem)\b",
+        "",
+        description,
+    )
+    description = re.sub(r"^(?:meu|minha|meus|minhas)\s+", "", description)
+    description = re.sub(r"\s+(?:e|,)\s*$", "", description)
+    return description.strip(" .,:;-\n")
 
 
 def _transaction_type(normalized: str) -> str | None:
@@ -148,11 +538,12 @@ def _resolve_named_record(
     records: list[dict],
     label: str,
 ) -> int | None:
+    normalized_description = description.casefold()
     matches = [
         item
         for item in records
         if str(item.get("nome", "")).strip()
-        and str(item.get("nome", "")).casefold() in description
+        and str(item.get("nome", "")).casefold() in normalized_description
     ]
     if len(matches) > 1:
         raise ExpenseCommandError(
@@ -634,10 +1025,12 @@ class FinancialOrchestrator:
         ]
         calculations = [f"Saldo calculado: {_money(int(totals['saldo']))}."]
         estimates: list[str] = []
+        top_category = None
         if "categoria" in question or "gasto" in question or "despes" in question:
             categories = context["gastos_por_categoria"]
             if categories:
                 top = categories[0]
+                top_category = top
                 facts.append(
                     "Maior categoria de despesas observada: "
                     f"{top['categoria']} ({_money(int(top['valor_centavos']))})."
@@ -677,14 +1070,44 @@ class FinancialOrchestrator:
             )
         )
         if savings_question:
+            categories = context["gastos_por_categoria"]
+            if categories:
+                top = categories[0]
+                top_category = top
+                category_name = str(top["categoria"]).strip()
+                if category_name and category_name.lower() != "sem categoria":
+                    answer_bits = [
+                        f"Seu maior gasto atual é {category_name} ({_money(int(top['valor_centavos']))}).",
+                        "Para economizar, reduza primeiro esse item e mantenha uma reserva mensal compatível com o seu saldo atual.",
+                    ]
+                else:
+                    answer_bits = [
+                        f"Seu maior gasto atual foi de {_money(int(top['valor_centavos']))}.",
+                        "Para economizar, reduza primeiro esse valor e mantenha uma reserva mensal compatível com o seu saldo atual.",
+                    ]
+            else:
+                answer_bits = [
+                    "Para economizar, comece revisando suas maiores despesas e definindo uma quantia sustentável para poupar.",
+                ]
+            saldo = int(totals["saldo"])
+            if saldo < 0:
+                answer_bits.append(
+                    f"O saldo atual está negativo em {_money(abs(saldo))}, então a prioridade é cortar gastos variáveis antes de aumentar a poupança."
+                )
+            else:
+                answer_bits.append(
+                    f"Seu saldo atual é {_money(saldo)}, então você pode separar uma parte dessa margem para poupança sem comprometer o mês."
+                )
+            answer_bits.append("Não realizei nenhuma alteração.")
+            answer = " ".join(answer_bits)
             calculations.append(
-                "Priorize revisar as maiores categorias de despesas antes de "
-                "definir um valor fixo para poupar."
+                "Priorize revisar as maiores categorias de despesas antes de definir um valor fixo para poupar."
             )
             calculations.append(
-                "Separe uma quantia compatível com o saldo calculado e revise "
-                "o resultado no próximo mês."
+                "Separe uma quantia compatível com o saldo calculado e revise o resultado no próximo mês."
             )
+        else:
+            answer = "Aqui está o resumo calculado com os dados disponíveis. Não realizei nenhuma alteração."
         projection = context["previsao"]
         if projection.get("status") == "insuficiente":
             estimates.append(str(projection["motivo"]))
@@ -694,18 +1117,7 @@ class FinancialOrchestrator:
                 f"{projection['meses_analisados']} meses; não é uma certeza."
             )
         return {
-            "answer": (
-                (
-                    "Para economizar, comece pelas maiores categorias de "
-                    "despesas e defina uma quantia sustentável para poupar. "
-                    "Não executei nenhuma alteração."
-                )
-                if savings_question
-                else (
-                    "Aqui está o resumo calculado com os dados disponíveis. "
-                    "Não executei nenhuma alteração."
-                )
-            ),
+            "answer": answer,
             "classification": "analise_financeira",
             "facts": facts,
             "calculations": calculations,

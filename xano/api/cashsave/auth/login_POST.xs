@@ -3,14 +3,14 @@ query "auth/login" verb=POST {
 
   input {
     email email filters=trim|lower
-    password password
+    text password
   }
 
   stack {
     db.get user {
       field_name = "email"
       field_value = $input.email
-      output = ["id", "name", "email", "password"]
+      output = ["id", "name", "email", "password", "avatar_url"]
     } as $user
 
     precondition ($user != null) {
@@ -44,6 +44,7 @@ query "auth/login" verb=POST {
       id: $user.id
       name: $user.name
       email: $user.email
+      avatar_url: $user.avatar_url
     }
   }
   guid = "j3xfCsZxD0h2qjy264yqT7zutYg"

@@ -1,5 +1,6 @@
 import reflex as rx
 
+from .components.layout import app_layout
 from .pages.assistente import assistente
 from .pages.apoiar import conteudo_apoiar
 from .pages.calendario import calendario_page
@@ -108,7 +109,7 @@ def sidebar(rota_atual: str) -> rx.Component:
 
             align="center",
             spacing="2",
-            padding="0.5em 0.8em",
+            padding="0.7em 0.9em",
         ),
 
         rx.divider(),
@@ -181,9 +182,8 @@ def sidebar(rota_atual: str) -> rx.Component:
 
         padding="1em",
 
-        border_right="1px solid var(--gray-5)",
-
-        background="var(--gray-2)",
+        border_right="1px solid rgba(148, 163, 184, 0.18)",
+        background="linear-gradient(180deg, #0f1318 0%, #111923 100%)",
 
         position="sticky",
         top="0",
@@ -198,30 +198,7 @@ def page_layout(
     rota_atual: str,
     *conteudo: rx.Component,
 ) -> rx.Component:
-
-    return rx.hstack(
-
-        sidebar(rota_atual),
-
-        rx.box(
-
-            rx.vstack(
-                *conteudo,
-
-                spacing="5",
-                align="start",
-                width="100%",
-            ),
-
-            padding="2em",
-            width="100%",
-            min_width="0",
-        ),
-
-        spacing="0",
-        align="start",
-        width="100%",
-    )
+    return app_layout(rota_atual, *conteudo)
 
 
 # ============================================================
@@ -297,18 +274,19 @@ def cartao_resumo(
                 rx.text(
                     titulo,
                     size="2",
-                    color_scheme="gray",
+                    color="rgba(226,232,240,0.7)",
                 ),
 
                 rx.heading(
                     valor,
                     size="6",
+                    color="white",
                 ),
 
                 rx.text(
                     legenda,
                     size="1",
-                    color_scheme="gray",
+                    color="rgba(148,163,184,0.9)",
                 ),
 
                 spacing="1",
@@ -327,6 +305,10 @@ def cartao_resumo(
         ),
 
         width="100%",
+        background="linear-gradient(180deg, rgba(17,24,39,0.96), rgba(15,23,42,0.96))",
+        border="1px solid rgba(148, 163, 184, 0.15)",
+        border_radius="16px",
+        padding="1.1em",
     )
 
 
@@ -352,7 +334,7 @@ def grafico_visao_geral() -> rx.Component:
                     rx.text(
                         "Últimos 6 meses",
                         size="2",
-                        color_scheme="gray",
+                        color="rgba(148,163,184,0.9)",
                     ),
 
                     spacing="0",
@@ -423,6 +405,10 @@ def grafico_visao_geral() -> rx.Component:
         ),
 
         width="100%",
+        background="linear-gradient(180deg, rgba(13,17,23,0.96), rgba(17,24,39,0.96))",
+        border="1px solid rgba(148,163,184,0.15)",
+        border_radius="18px",
+        padding="1.2em",
     )
 
 
@@ -448,7 +434,7 @@ def proximos_vencimentos() -> rx.Component:
                     rx.text(
                         "Contas a pagar",
                         size="2",
-                        color_scheme="gray",
+                        color="rgba(148,163,184,0.9)",
                     ),
 
                     spacing="0",
@@ -493,7 +479,7 @@ def proximos_vencimentos() -> rx.Component:
                     rx.text(
                         "Total pendente: " + AppState.proximo_vencimento_total,
                         weight="bold",
-                        color="var(--orange-9)",
+                        color="var(--red-9)",
                         margin_top="0.5em",
                     ),
                     width="100%",
@@ -517,6 +503,10 @@ def proximos_vencimentos() -> rx.Component:
         ),
 
         width="100%",
+        background="linear-gradient(180deg, rgba(13,17,23,0.96), rgba(17,24,39,0.96))",
+        border="1px solid rgba(148,163,184,0.15)",
+        border_radius="18px",
+        padding="1.2em",
     )
 
 
@@ -647,14 +637,17 @@ def banner_ia() -> rx.Component:
                     "Começar agora",
                     variant="solid",
                     color_scheme="gray",
+                    width=rx.breakpoints(initial="100%", lg="auto"),
                 ),
 
                 href="/assistente",
+                width=rx.breakpoints(initial="100%", lg="auto"),
             ),
 
             align="center",
             spacing="4",
             width="100%",
+            flex_direction=rx.breakpoints(initial="column", lg="row"),
         ),
 
         background="linear-gradient(90deg, #0f9d7a, #0e7490)",
@@ -674,7 +667,7 @@ def banner_ia() -> rx.Component:
 def dashboard_conteudo() -> rx.Component:
     return page_layout(
 
-        "/",
+        "/app",
 
         cabecalho(
             rx.cond(
@@ -798,10 +791,10 @@ def dashboard_conteudo() -> rx.Component:
                 AppState.proximo_vencimento_total,
                 "Próximos 7 dias",
                 "calendar",
-                "orange",
+                "red",
             ),
 
-            columns="4",
+            columns=rx.breakpoints(initial="1", sm="2", xl="4"),
             spacing="4",
             width="100%",
         ),
@@ -840,7 +833,7 @@ def dashboard_conteudo() -> rx.Component:
                         "Calendário",
                         "Gerencie seus vencimentos",
                         "calendar",
-                        "amber",
+                        "green",
                         "/calendario",
                     ),
 
@@ -852,7 +845,7 @@ def dashboard_conteudo() -> rx.Component:
                         "/financas",
                     ),
 
-                    columns="2",
+                    columns=rx.breakpoints(initial="1", md="2"),
                     spacing="4",
                     width="100%",
                 ),
@@ -862,17 +855,20 @@ def dashboard_conteudo() -> rx.Component:
 
                 flex="3",
                 min_width="0",
+                width="100%",
             ),
 
             rx.box(
                 proximos_vencimentos(),
                 flex="1",
                 min_width="0",
+                width="100%",
             ),
 
             spacing="5",
             align="start",
             width="100%",
+            flex_direction=rx.breakpoints(initial="column", xl="row"),
         ),
 
         # Banner IA
@@ -1055,7 +1051,7 @@ def apoiar() -> rx.Component:
 # APLICAÇÃO
 # ============================================================
 
-app = rx.App()
+app = rx.App(stylesheets=["/password-visibility.css"])
 
 app.add_page(
     landing_page,

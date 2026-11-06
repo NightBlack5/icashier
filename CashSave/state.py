@@ -21,7 +21,15 @@ from .ai_services import (
     FinancialContextService,
     FinancialOrchestrator,
     OllamaError,
-    parse_expense_command,
+    ParsedPayableBill,
+    complete_payable_bill,
+    parse_payable_bill,
+    parse_transaction_batch,
+)
+from .expense_reports import (
+    expense_report_data,
+    generate_expense_pdf,
+    is_expense_pdf_request,
 )
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
@@ -90,12 +98,11 @@ def _send_request(
             detail = json.loads(error.read().decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
             detail = {}
-        message = (
-            detail.get("message")
-            or detail.get("error")
-            or f"Xano respondeu com HTTP {error.code}."
+        message = _api_error_message(
+            detail,
+            f"Xano respondeu com HTTP {error.code}.",
         )
-        raise XanoAPIError(str(message), status_code=error.code) from error
+        raise XanoAPIError(message, status_code=error.code) from error
     except (TimeoutError, URLError) as error:
         raise XanoAPIError(
             "Não foi possível conectar ao Xano. Verifique a URL e sua conexão."
@@ -121,6 +128,20 @@ def _records(response: object) -> list[dict]:
 
 def _as_record(response: object) -> dict:
     return response if isinstance(response, dict) else {}
+
+
+def _api_error_message(detail: object, fallback: str) -> str:
+    if isinstance(detail, str) and detail.strip():
+        return detail.strip()
+    if isinstance(detail, dict):
+        message = detail.get("message")
+        if isinstance(message, str) and message.strip():
+            return message.strip()
+        for key in ("error", "response", "data"):
+            message = _api_error_message(detail.get(key), "")
+            if message:
+                return message
+    return fallback
 
 
 def _message_text(content: object) -> str:
@@ -997,13 +1018,14 @@ class AppState(rx.State):
     @rx.event
     async def autenticar(self):
         self.erro = ""
-        email = self.auth_email.strip()
+        email = self.auth_email.strip().lower()
         if not email and self.lembrar_email == "true":
-            email = self.auth_email_salvo.strip()
+            email = self.auth_email_salvo.strip().lower()
         if not email:
             self.erro = "Informe seu e-mail."
             return
-        if not self.auth_password:
+        password = self.auth_password.strip()
+        if not password:
             self.erro = "Informe sua senha."
             return
         if self.cadastro:
@@ -1052,7 +1074,7 @@ class AppState(rx.State):
                         "auth/login",
                         {
                             "email": email,
-                            "password": self.auth_password,
+                            "password": password,
                         },
                     )
                 )
@@ -1631,6 +1653,15 @@ class AppState(rx.State):
         self.conta_valor = value
 
     @rx.event
+    def formatar_conta_valor(self):
+        if not self.conta_valor.strip():
+            return
+        try:
+            self.conta_valor = _formatar_entrada_reais(self.conta_valor)
+        except XanoAPIError:
+            return
+
+    @rx.event
     def set_conta_vencimento(self, value: str):
         self.conta_vencimento = value
 
@@ -2038,49 +2069,239 @@ class AppState(rx.State):
 
         self.assistente_carregando = True
         self.erro = ""
+        download_event = None
         try:
-            parsed_expense = parse_expense_command(
+            pending_bill = None
+            last_message = (
+                self.assistente_mensagens[-1]
+                if self.assistente_mensagens
+                else {}
+            )
+            last_answer = str(last_message.get("texto", "")).casefold()
+            if last_message.get("tipo") == "ia" and any(
+                phrase in last_answer
+                for phrase in (
+                    "qual é a descrição da conta",
+                    "qual é o valor da conta",
+                    "qual é o valor dessa conta",
+                    "qual é a data de vencimento dessa conta",
+                )
+            ):
+                previous_user_message = next(
+                    (
+                        str(message.get("texto", ""))
+                        for message in reversed(self.assistente_mensagens[:-1])
+                        if message.get("tipo") == "usuario"
+                    ),
+                    "",
+                )
+                if previous_user_message:
+                    pending_bill = parse_payable_bill(
+                        previous_user_message,
+                        self.categorias,
+                        self.contas,
+                    )
+
+            parsed_bill = parse_payable_bill(
                 texto,
                 self.categorias,
                 self.contas,
             )
-            if parsed_expense is not None:
-                transacao = _as_record(
-                    await self._api(
-                        "POST",
-                        "transacoes",
-                        {
-                            "tipo": parsed_expense.tipo,
-                            "descricao": parsed_expense.description,
-                            "valor_centavos": parsed_expense.value_centavos,
-                            "data": parsed_expense.data,
-                            "categoria_id": parsed_expense.categoria_id,
-                            "conta_id": parsed_expense.conta_id,
-                        },
-                    )
+            if parsed_bill is None and pending_bill is not None:
+                parsed_bill = complete_payable_bill(
+                    pending_bill,
+                    texto,
+                    self.categorias,
+                    self.contas,
                 )
-                if "id" not in transacao:
-                    raise XanoAPIError("O Xano não confirmou o lançamento.")
-                self.transacoes = _records_with_money(
-                    [transacao, *self.transacoes],
-                    "valor_centavos",
+
+            if parsed_bill is not None:
+                if not parsed_bill.description:
+                    response = {
+                        "answer": (
+                            "Qual é a descrição da conta? Por exemplo: "
+                            "luz, água ou internet."
+                        ),
+                        "facts": [],
+                        "calculations": [],
+                        "estimates": [],
+                    }
+                elif parsed_bill.value_centavos is None:
+                    response = {
+                        "answer": "Qual é o valor dessa conta?",
+                        "facts": [],
+                        "calculations": [],
+                        "estimates": [],
+                    }
+                elif parsed_bill.data_vencimento is None:
+                    response = {
+                        "answer": (
+                            "Qual é a data de vencimento dessa conta? "
+                            "Pode informar, por exemplo, 10/11/2026."
+                        ),
+                        "facts": [],
+                        "calculations": [],
+                        "estimates": [],
+                    }
+                else:
+                    try:
+                        bill = _as_record(
+                            await self._api(
+                                "POST",
+                                "contas_a_pagar",
+                                {
+                                    "descricao": parsed_bill.description,
+                                    "valor_centavos": parsed_bill.value_centavos,
+                                    "data_vencimento": parsed_bill.data_vencimento,
+                                    "categoria_id": parsed_bill.categoria_id,
+                                    "conta_id": parsed_bill.conta_id,
+                                },
+                            )
+                        )
+                        if "id" not in bill:
+                            raise XanoAPIError(
+                                "O Xano não confirmou a conta a pagar."
+                            )
+                    except XanoAPIError as error:
+                        response = {
+                            "answer": (
+                                "Não consegui confirmar o cadastro da conta "
+                                f"'{parsed_bill.description}' no Xano: {error}"
+                            ),
+                            "facts": [],
+                            "calculations": [],
+                            "estimates": [],
+                        }
+                    else:
+                        self.contas_a_pagar = _records_with_money(
+                            [*self.contas_a_pagar, bill],
+                            "valor_centavos",
+                        )
+                        response = {
+                            "answer": (
+                                f"Conta a pagar cadastrada: "
+                                f"{parsed_bill.description}, "
+                                f"{_formatar_centavos(parsed_bill.value_centavos)}, "
+                                f"com vencimento em "
+                                f"{parsed_bill.data_vencimento}."
+                            ),
+                            "facts": [],
+                            "calculations": [],
+                            "estimates": [],
+                        }
+            else:
+                parsed_transactions = parse_transaction_batch(
+                    texto,
+                    self.categorias,
+                    self.contas,
+                )
+            if parsed_bill is None and parsed_transactions:
+                confirmed = []
+                failed_transaction = None
+                failure_message = ""
+                for parsed_transaction in parsed_transactions:
+                    payload = {
+                        "tipo": parsed_transaction.tipo,
+                        "descricao": parsed_transaction.description,
+                        "valor_centavos": parsed_transaction.value_centavos,
+                        "data": parsed_transaction.data,
+                        "categoria_id": parsed_transaction.categoria_id,
+                        "conta_id": parsed_transaction.conta_id,
+                    }
+                    try:
+                        transaction = _as_record(
+                            await self._api("POST", "transacoes", payload)
+                        )
+                        if "id" not in transaction:
+                            raise XanoAPIError(
+                                "O Xano não confirmou o lançamento."
+                            )
+                    except XanoAPIError as error:
+                        failed_transaction = parsed_transaction
+                        failure_message = str(error)
+                        break
+                    confirmed.append(transaction)
+                    self.transacoes = _records_with_money(
+                        [transaction, *self.transacoes],
+                        "valor_centavos",
+                    )
+
+                if failed_transaction is not None:
+                    failed_kind = (
+                        "receita"
+                        if failed_transaction.tipo == "receita"
+                        else "despesa"
+                    )
+                    if confirmed:
+                        answer = (
+                            f"Cadastrei apenas {len(confirmed)} de "
+                            f"{len(parsed_transactions)} lançamentos. Falhou "
+                            f"a {failed_kind} '{failed_transaction.description}': "
+                            f"{failure_message}. Não calculei o saldo do conjunto "
+                            "porque nem todos os lançamentos foram confirmados."
+                        )
+                    else:
+                        answer = (
+                            f"Não consegui cadastrar a {failed_kind} "
+                            f"'{failed_transaction.description}': {failure_message}"
+                        )
+                    response = {
+                        "answer": answer,
+                        "facts": [],
+                        "calculations": [],
+                        "estimates": [],
+                    }
+                else:
+                    income_total = sum(
+                        transaction.value_centavos
+                        for transaction in parsed_transactions
+                        if transaction.tipo == "receita"
+                    )
+                    expense_total = sum(
+                        transaction.value_centavos
+                        for transaction in parsed_transactions
+                        if transaction.tipo == "despesa"
+                    )
+                    balance = income_total - expense_total
+                    response = {
+                        "answer": (
+                            f"Todos os {len(parsed_transactions)} lançamentos "
+                            "foram confirmados pelo Xano. "
+                            f"Receitas informadas: {_formatar_centavos(income_total)}; "
+                            f"despesas informadas: {_formatar_centavos(expense_total)}. "
+                            "Saldo deste conjunto de lançamentos: "
+                            f"{_formatar_centavos(balance)} "
+                            "(receitas menos despesas)."
+                        ),
+                        "facts": [],
+                        "calculations": [],
+                        "estimates": [],
+                    }
+            elif parsed_bill is None and is_expense_pdf_request(texto):
+                expenses, total = expense_report_data(
+                    self.transacoes,
+                    self.categorias,
+                )
+                pdf_bytes = generate_expense_pdf(
+                    self.transacoes,
+                    self.categorias,
                 )
                 response = {
-                    "answer": (
-                        (
-                            "Receita cadastrada com sucesso: "
-                            if parsed_expense.tipo == "receita"
-                            else "Despesa cadastrada com sucesso: "
-                        )
-                        +
-                        f"{parsed_expense.description} no valor de "
-                        f"{_formatar_centavos(parsed_expense.value_centavos)}."
-                    ),
-                    "facts": [],
-                    "calculations": [],
+                    "answer": "Gerei o relatório em PDF e iniciei o download.",
+                    "facts": [
+                        f"Despesas incluídas: {len(expenses)}.",
+                    ],
+                    "calculations": [
+                        f"Total de despesas: {_formatar_centavos(total)}.",
+                    ],
                     "estimates": [],
                 }
-            else:
+                download_event = rx.download(
+                    data=pdf_bytes,
+                    filename=f"relatorio-despesas-{date.today().isoformat()}.pdf",
+                    mime_type="application/pdf",
+                )
+            elif parsed_bill is None:
                 context_service = FinancialContextService(
                     transactions=self.transacoes,
                     accounts=self.contas,
@@ -2154,3 +2375,5 @@ class AppState(rx.State):
             raise RuntimeError("Resposta inválida da IA local.") from error
         finally:
             self.assistente_carregando = False
+        if download_event is not None:
+            return download_event

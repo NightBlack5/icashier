@@ -7,6 +7,7 @@ Há alterações locais no CashSave e no Xano para cadastro, perfil, transaçõe
 ## O que muda
 
 - Documentar cadastro, login e gerenciamento da foto de perfil.
+- Normalizar e validar as credenciais do login antes do envio ao Xano, preservar a senha como texto e cobrir os erros de autenticação no formulário.
 - Documentar o resumo financeiro autenticado, os filtros e a exportação de transações.
 - Documentar lançamentos recorrentes, metas e notificações financeiras.
 
