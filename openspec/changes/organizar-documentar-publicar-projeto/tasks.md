@@ -19,4 +19,4 @@
   registrando limitações externas.
 - [x] 3.2 Revisar diff e índice contra o inventário preexistente, validar
   OpenSpec e confirmar ausência de segredos nos paths da missão.
-- [ ] 3.3 Criar commit somente com os paths da missão e fazer push sem força.
+- [x] 3.3 Criar commit somente com os paths da missão e fazer push sem força.
