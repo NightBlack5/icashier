@@ -1,34 +1,62 @@
 # CashSave
 
-Aplicativo de organização financeira feito com Reflex. A interface roda localmente e usa o grupo de APIs Xano configurado no ambiente para autenticação e persistência.
+Aplicativo de organização financeira desenvolvido com Python e Reflex. A
+interface roda localmente, enquanto autenticação e persistência usam um grupo de
+APIs Xano configurado por ambiente. O assistente financeiro local com Ollama é
+opcional e apenas analítico.
 
-## Executar localmente no Windows
+## Funcionalidades
 
-1. Crie ou ative um ambiente virtual e instale as dependências:
+- Landing page, autenticação e cadastro.
+- Dashboard financeiro, transações, contas, recorrências, orçamentos, metas e
+  contas a pagar.
+- Calendário, perfil, preferências e upload de avatar.
+- Relatórios de despesas em PDF.
+- Assistente Jarvis com histórico e integração opcional com Ollama.
+- Definições versionadas de APIs e tabelas em `xano/`.
 
-   ```powershell
-   py -m venv .venv-cashsave
-   .\.venv-cashsave\Scripts\Activate.ps1
-   python -m pip install -r requirements.txt
-   ```
+O estado detalhado de cada funcionalidade, limitações e evidências está em
+[`spec/PROJETO.md`](spec/PROJETO.md). O relatório de auditoria histórica está em
+[`docs/AUDITORIA_TECNICA.md`](docs/AUDITORIA_TECNICA.md).
 
-2. Copie `.env.example` para `.env` e configure `CASH_SAVE_API_URL` com a URL do grupo CashSave no Xano. Não versione `.env`.
+## Tecnologias
 
-3. Inicie o app:
+- Python e Reflex 0.9.12.
+- `python-dotenv` para configuração local.
+- Xano para autenticação, persistência e APIs financeiras.
+- Ollama local opcional para análise financeira.
+- `unittest` para testes automatizados.
+- ReportLab para relatórios PDF.
 
-   ```powershell
-   $env:PYTHONIOENCODING = "utf-8"
-   reflex run --env prod --single-port
-   ```
+## Pré-requisitos
 
-4. Abra o endereço local informado pelo Reflex (por padrão, `http://localhost:3000`).
+- Python compatível com a versão instalada do Reflex.
+- Acesso aos endpoints Xano publicados para testar fluxos autenticados.
+- Ollama e um modelo local somente se o assistente for exercitado.
 
-O modo `prod` aqui só altera como o app é servido localmente; não publica o site. Para desenvolvimento com recarga automática, use `--env dev`.
-No Windows, mantenha `PYTHONIOENCODING=utf-8` durante o comando de produção
-para que o progresso Unicode do build não falhe no console com a codificação
-legada `cp1252`.
+## Instalação e configuração no Windows
 
-## Verificações
+```powershell
+py -m venv .venv-cashsave
+.\.venv-cashsave\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+Copy-Item .env.example .env
+```
+
+Edite `.env` localmente e configure `CASH_SAVE_API_URL` com a URL HTTPS do grupo
+CashSave no Xano. Para usar o assistente, ajuste também as variáveis
+`CASHSAVE_OLLAMA_*`. Nunca versione o `.env`.
+
+## Executar
+
+```powershell
+$env:PYTHONIOENCODING = "utf-8"
+reflex run --env prod --single-port
+```
+
+Para desenvolvimento com recarga automática, use `reflex run --env dev`.
+
+## Testar e compilar
 
 ```powershell
 $env:PYTHONIOENCODING = "utf-8"
@@ -36,80 +64,22 @@ python -m unittest discover -s tests -v
 reflex compile --dry
 ```
 
-O app depende de endpoints publicados no Xano e de uma conta válida para testar fluxos autenticados. Os arquivos em `xano/` são a definição versionada das APIs e tabelas, não uma confirmação de que foram publicados no workspace remoto.
+Os testes locais não substituem a validação de cadastro, login, CRUD,
+isolamento entre usuários, upload e persistência em um workspace Xano publicado
+com uma conta de demonstração isolada.
 
-Se o login remoto aceitar uma senha incorreta ou o resumo retornar apenas parte
-dos campos, publique novamente no workspace Xano os arquivos de
-`xano/api/cashsave/` e confirme a publicação de `auth/login`, `resumo` e
-`recorrencias`. O cliente possui fallback para os endpoints financeiros
-individuais, mas não pode corrigir uma versão antiga publicada sem acesso
-administrativo ao Xano.
+## Estrutura
 
-### Smoke test das rotas
-
-Com o servidor em produção rodando, verifique no navegador as rotas abaixo:
-
-| Rota | Resultado esperado sem sessão |
-|---|---|
-| `/` | Landing page pública |
-| `/login` | Formulário de login |
-| `/cadastro` | Formulário de cadastro |
-| `/sobre` | Página institucional |
-| `/suporte` | FAQ e suporte |
-| `/apoiar` | Página de apoio |
-| `/app` | Estado não autenticado, sem erro de servidor |
-| `/assistente` | Estado não autenticado, sem erro de servidor |
-| `/financas` | Estado não autenticado, sem erro de servidor |
-| `/calendario` | Estado não autenticado, sem erro de servidor |
-| `/perfil` | Estado não autenticado, sem erro de servidor |
-
-As seis primeiras rotas são públicas e não devem depender do Xano para
-renderizar. As cinco últimas usam carregamento protegido e devem ser abertas
-sem sessão apenas para confirmar o estado de autenticação. O conjunto offline
-de testes valida o registro das rotas e impede chamadas Xano no componente da
-landing page:
-
-```powershell
-$env:PYTHONIOENCODING = "utf-8"
-python -m unittest discover -s tests -v
+```text
+CashSave/       Aplicação Reflex, páginas, estado e integrações
+tests/          Testes unitários e verificações de rotas/contratos
+xano/           APIs e tabelas versionadas do backend
+docs/           Relatórios e documentação histórica
+spec/           Especificação técnica consolidada do projeto
+portfolio/      Materiais de apresentação do projeto
 ```
 
-Esse smoke test não confirma cadastro, login, persistência, isolamento entre
-usuários, upload ou CRUD no Xano. Esses fluxos exigem uma conta de demonstração
-isolada e um workspace Xano publicado com as definições versionadas.
+## Documentação técnica
 
-## Assistente financeira local com Ollama
-
-A página `/assistente` pode usar um modelo Ollama local para responder perguntas
-somente de análise. O backend monta o contexto a partir dos dados financeiros
-já carregados para o usuário autenticado; o navegador não acessa o Ollama e a
-IA não cria, edita ou exclui registros.
-
-O Ollama é opcional. Sem ele, o CashSave continua iniciando e a tela informa
-explicitamente que o serviço local está indisponível.
-
-### Instalação manual
-
-1. Instale o Ollama pelo site oficial ou pelo gerenciador apropriado ao seu
-   sistema operacional.
-2. Inicie o serviço local e confirme que ele está escutando em
-   `http://127.0.0.1:11434`.
-3. Baixe manualmente um modelo compatível com a memória da máquina. Um ponto de
-   partida é `llama3.2:3b`; modelos maiores exigem mais RAM/VRAM. O projeto não
-   baixa modelos automaticamente.
-4. Copie as variáveis `CASHSAVE_OLLAMA_*` de `.env.example` para `.env` e ajuste
-   o nome do modelo, se necessário.
-5. Reinicie o CashSave após alterar o `.env`.
-
-O ambiente auditado desta máquina não possui o comando `ollama`, portanto a
-integração real com um modelo não foi executada nesta etapa. Os testes usam
-respostas mockadas e não são prova do comportamento de um modelo real.
-
-### Limites da primeira versão
-
-- A pergunta tem limite de 1200 caracteres por padrão.
-- O contexto, histórico e resposta possuem limites configuráveis.
-- A projeção usa a média simples dos últimos meses disponíveis e é apresentada
-  como estimativa, nunca como certeza.
-- Com menos de dois meses de transações, a projeção é marcada como insuficiente.
-- A assistente não executa SQL, código, ferramentas ou operações financeiras.
+Consulte o [Spec do projeto](spec/README.md) para arquitetura, módulos,
+integrações, modelo de dados, segurança, testes, limitações e próximos passos.
