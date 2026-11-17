@@ -198,10 +198,11 @@ def dia_calendario(item: dict) -> rx.Component:
         ),
 
         width="100%",
-        height="82px",
-        padding="0.8em",
+        height=rx.breakpoints(initial="50px", sm="66px", md="82px"),
+        padding=rx.breakpoints(initial="0.35em", sm="0.6em", md="0.8em"),
         border="1px solid var(--gray-5)",
         border_radius="12px",
+        class_name="cashsave-calendar-day",
 
         background=rx.cond(
             item["mes_atual"],
@@ -288,6 +289,7 @@ def calendario_mensal() -> rx.Component:
         width="100%",
         padding="1.5em",
         border_radius="16px",
+        class_name="cashsave-panel",
     )
 
 
@@ -387,6 +389,7 @@ def proximas_contas() -> rx.Component:
         width="100%",
         min_width="0",
         padding="1.5em",
+        class_name="cashsave-panel",
         border_radius="16px",
     )
 
@@ -412,6 +415,7 @@ def conteudo_calendario() -> rx.Component:
         spacing="5",
         align="start",
         width="100%",
+        class_name="cashsave-page-content",
     )
 
 

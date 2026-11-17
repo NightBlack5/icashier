@@ -3,12 +3,12 @@ import reflex as rx
 from ..state import AppState
 
 
-BACKGROUND = "#031513"
-CARD_BACKGROUND = "rgba(3, 19, 22, 0.94)"
-FIELD_BACKGROUND = "#061c20"
-FIELD_BORDER = "#173638"
-GREEN = "#12e5a0"
-MUTED = "#a2b5b5"
+BACKGROUND = "var(--cashsave-bg-deep)"
+CARD_BACKGROUND = "rgba(8, 21, 17, 0.91)"
+FIELD_BACKGROUND = "rgba(5, 17, 14, 0.72)"
+FIELD_BORDER = "rgba(153, 191, 170, 0.2)"
+GREEN = "var(--cashsave-green)"
+MUTED = "var(--cashsave-muted)"
 
 
 def campo_email() -> rx.Component:
@@ -44,6 +44,7 @@ def campo_email() -> rx.Component:
         background=FIELD_BACKGROUND,
         transition="border-color 150ms ease",
         _focus_within={"border_color": GREEN},
+        class_name="cashsave-auth-field",
     )
 
 
@@ -93,6 +94,7 @@ def campo_senha(is_registration: bool = False) -> rx.Component:
         background=FIELD_BACKGROUND,
         transition="border-color 150ms ease",
         _focus_within={"border_color": GREEN},
+        class_name="cashsave-auth-field",
     )
 
 
@@ -123,6 +125,7 @@ def campo_nome() -> rx.Component:
         border_radius="11px",
         background=FIELD_BACKGROUND,
         _focus_within={"border_color": GREEN},
+        class_name="cashsave-auth-field",
     )
 
 
@@ -155,6 +158,7 @@ def campo_telefone() -> rx.Component:
         border_radius="11px",
         background=FIELD_BACKGROUND,
         _focus_within={"border_color": GREEN},
+        class_name="cashsave-auth-field",
     )
 
 
@@ -212,6 +216,7 @@ def campo_confirmacao_senha() -> rx.Component:
         background=FIELD_BACKGROUND,
         transition="border-color 150ms ease",
         _focus_within={"border_color": GREEN},
+        class_name="cashsave-auth-field",
     )
 
 
@@ -369,6 +374,7 @@ def auth_page(is_registration: bool = False) -> rx.Component:
                     ),
                     on_submit=AppState.autenticar,
                     width="100%",
+                    class_name="cashsave-control",
                 ),
                 rx.hstack(
                     rx.text(
@@ -399,19 +405,19 @@ def auth_page(is_registration: bool = False) -> rx.Component:
                 ),
                 width="100%",
                 max_width="460px" if is_registration else "400px",
-                min_height="660px" if is_registration else "560px",
                 padding=rx.breakpoints(
                     initial="24px 24px 28px",
                     sm="40px 32px 22px",
                 ),
                 spacing="0",
                 align="stretch",
-                border="1px solid #173638",
-                border_radius="16px",
+                border="1px solid rgba(153, 191, 170, 0.18)",
+                border_radius="24px",
                 background=CARD_BACKGROUND,
-                box_shadow="0 24px 80px rgba(0, 0, 0, 0.38)",
-                backdrop_filter="blur(16px)",
+                box_shadow="0 28px 90px rgba(0, 0, 0, 0.42)",
+                backdrop_filter="blur(20px)",
                 box_sizing="border-box",
+                class_name="cashsave-auth-card",
             ),
             width="100%",
             min_height="100vh",
@@ -420,14 +426,15 @@ def auth_page(is_registration: bool = False) -> rx.Component:
             z_index="1",
         ),
         width="100%",
-        min_height="100vh",
+        min_height="100dvh",
         overflow="hidden",
         position="relative",
         background=(
-            "radial-gradient(ellipse at 8% 0%, rgba(0, 163, 110, 0.18), transparent 29%), "
-            "radial-gradient(ellipse at 98% 88%, rgba(0, 166, 115, 0.12), transparent 36%), "
+            "radial-gradient(ellipse at 8% 0%, rgba(44, 165, 112, 0.2), transparent 29%), "
+            "radial-gradient(ellipse at 98% 88%, rgba(47, 150, 110, 0.14), transparent 36%), "
             f"{BACKGROUND}"
         ),
+        class_name="cashsave-auth-screen",
     )
 
 

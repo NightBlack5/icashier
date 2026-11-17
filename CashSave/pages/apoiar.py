@@ -144,6 +144,7 @@ def conteudo_apoiar() -> rx.Component:
             ),
             width="100%",
             padding="1.5em",
+            class_name="cashsave-panel",
         ),
         cartao_pix(),
         spacing="5",
@@ -151,4 +152,5 @@ def conteudo_apoiar() -> rx.Component:
         width="100%",
         max_width="720px",
         margin_x="auto",
+        class_name="cashsave-page-content",
     )

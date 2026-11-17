@@ -7,6 +7,7 @@ MENU = [
 	("Visão Geral", "layout-dashboard", "/app"),
 	("Jarvis", "bot", "/assistente"),
 	("Finanças", "trending-up", "/financas"),
+	("Bolsa de Valores", "chart-no-axes-combined", "/bolsa"),
 	("Calendário", "calendar", "/calendario"),
 	("Preferências", "settings", "/perfil"),
 	("Sobre", "info", "/sobre"),
@@ -48,6 +49,11 @@ def menu_item(label: str, icon: str, path: str, active: bool) -> rx.Component:
 		width="100%",
 		color="var(--green-11)" if active else "var(--gray-12)",
 		text_decoration="none",
+		class_name=(
+			["cashsave-nav-item", "is-active"]
+			if active
+			else "cashsave-nav-item"
+		),
 	)
 
 
@@ -65,6 +71,7 @@ def app_sidebar(active_route: str) -> rx.Component:
 			justify=rx.breakpoints(initial="center", md="start"),
 			spacing="2",
 			padding=rx.breakpoints(initial="0.4em", md="0.5em 0.8em"),
+			color="var(--cashsave-text)",
 		),
 		rx.divider(),
 		rx.vstack(
@@ -105,6 +112,7 @@ def app_sidebar(active_route: str) -> rx.Component:
 			padding=rx.breakpoints(initial="0.4em", md="0.65em 0.8em"),
 			border_radius="8px",
 			background="var(--gray-3)",
+			class_name="cashsave-user-chip",
 		),
 		rx.button(
 			rx.icon("log-out", size=16),
@@ -130,10 +138,45 @@ def app_sidebar(active_route: str) -> rx.Component:
 		top="0",
 		background="linear-gradient(180deg, #0f1318 0%, #111923 100%)",
 		border_right="1px solid rgba(148,163,184,0.18)",
+		class_name="cashsave-sidebar",
+	)
+
+
+def jarvis_fab_route_enabled(active_route: str) -> bool:
+	return active_route not in {"/assistente", "/perfil"}
+
+
+def botao_jarvis_global() -> rx.Component:
+	return rx.box(
+		rx.box(
+			rx.tooltip(
+				rx.link(
+					rx.icon("bot", size=27),
+					href="/assistente",
+					aria_label="Converse com o Jarvis",
+					class_name="cashsave-jarvis-fab",
+				),
+				content="Converse com o Jarvis",
+				side="top",
+				side_offset=12,
+				delay_duration=320,
+			),
+			class_name="cashsave-jarvis-fab-float",
+		),
+		class_name="cashsave-jarvis-fab-position",
 	)
 
 
 def app_layout(active_route: str, *content: rx.Component) -> rx.Component:
+	jarvis_action = (
+		rx.cond(
+			AppState.autenticado,
+			botao_jarvis_global(),
+			rx.fragment(),
+		)
+		if jarvis_fab_route_enabled(active_route)
+		else rx.fragment()
+	)
 	return rx.hstack(
 		app_sidebar(active_route),
 		rx.box(
@@ -143,16 +186,23 @@ def app_layout(active_route: str, *content: rx.Component) -> rx.Component:
 				align="start",
 				width="100%",
 				min_width="0",
+				class_name="cashsave-page-content",
 			),
-			padding=rx.breakpoints(initial="1em", md="2em 2.5em"),
+			padding=rx.breakpoints(
+				initial="1.1em 0.9em 5.5em",
+				sm="1.5em 1.5em 5.5em",
+				md="2em 2.5em 5.5em",
+			),
 			width="100%",
 			min_width="0",
 			min_height="100vh",
-			background="linear-gradient(180deg, #0b0d10 0%, #10161d 100%)",
+			class_name="cashsave-main",
 		),
+		jarvis_action,
 		spacing="0",
 		align="start",
 		width="100%",
 		min_height="100vh",
-		background="#0b0d10",
+		background="var(--cashsave-bg)",
+		class_name="cashsave-app-shell",
 	)

@@ -37,7 +37,8 @@ class FakeResponse:
     def __enter__(self):
         return self
 
-    def __exit__(self, *args):
+    def __exit__(self, *_args):
+        _ = _args
         return False
 
     def read(self):
@@ -115,7 +116,8 @@ class OllamaClientTests(unittest.TestCase):
         self.assertFalse(body["stream"])
 
     def test_reports_unavailable_ollama(self):
-        def fail(*args, **kwargs):
+        def fail(*_args, **_kwargs):
+            _ = (_args, _kwargs)
             raise TimeoutError("timeout")
 
         client = OllamaClient(OllamaSettings(), opener=fail)
@@ -369,6 +371,137 @@ class ValidationAndOrchestrationTests(unittest.TestCase):
         self.assertNotIn("auth_token", json.dumps(context))
         self.assertNotIn("password", json.dumps(context))
         self.assertNotIn("email", json.dumps(context))
+
+    def test_investment_answers_are_deterministic_and_include_portfolio_facts(self):
+        context = FinancialContextService(
+            transactions=[],
+            accounts=[],
+            categories=[],
+            bills=[],
+            budgets=[],
+            goals=[],
+            recurring=[],
+            investment_context={
+                "status": "disponivel",
+                "posicoes": [
+                    {
+                        "ativo_codigo": "PETR4",
+                        "ativo_categoria": "ACAO",
+                        "quantidade": "2",
+                    }
+                ],
+                "custo_investido_centavos": 2000,
+                "resultado_realizado_centavos": 300,
+                "proventos_recebidos_centavos": 100,
+                "valor_mercado_centavos": None,
+                "resultado_nao_realizado_centavos": None,
+                "rentabilidade_simples_percentual": None,
+                "ativo_aberto": {
+                    "symbol": "PETR4",
+                    "price": "R$ 12,00",
+                    "source": "provedor-verificado",
+                    "reference_at": "2026-03-15T12:00:00+00:00",
+                    "freshness": "Atrasada",
+                    "stale": "true",
+                },
+                "perfil_educativo": {"disponivel": False},
+            },
+        )
+        client = Mock()
+        result = FinancialOrchestrator(client=client).answer(
+            "Qual é a situação da minha carteira?",
+            [],
+            context,
+        )
+
+        self.assertEqual(result["classification"], "analise_investimento")
+        self.assertTrue(any("PETR4" in fact for fact in result["facts"]))
+        self.assertTrue(
+            any("provedor-verificado" in fact for fact in result["facts"])
+        )
+        self.assertTrue(
+            any("desatualizada" in estimate for estimate in result["estimates"])
+        )
+        self.assertTrue(
+            any("R$ 20,00" in calculation for calculation in result["calculations"])
+        )
+        self.assertFalse(any("R$ 12,00" in item for item in result["calculations"]))
+        client.chat.assert_not_called()
+
+    def test_investment_answers_disclose_missing_data_and_profile(self):
+        context = FinancialContextService(
+            transactions=[],
+            accounts=[],
+            categories=[],
+            bills=[],
+            budgets=[],
+            goals=[],
+            recurring=[],
+            investment_context={
+                "status": "disponivel",
+                "posicoes": [],
+                "custo_investido_centavos": 0,
+                "resultado_realizado_centavos": 0,
+                "proventos_recebidos_centavos": 0,
+                "valor_mercado_centavos": 0,
+                "resultado_nao_realizado_centavos": 0,
+                "rentabilidade_simples_percentual": None,
+                "ativo_aberto": None,
+                "perfil_educativo": {"disponivel": False},
+            },
+        )
+        result = FinancialOrchestrator(client=Mock()).answer(
+            "Como está minha rentabilidade?",
+            [],
+            context,
+        )
+
+        self.assertTrue(
+            any("não há posições" in fact.lower() for fact in result["facts"])
+        )
+        self.assertTrue(
+            any("Perfil de investidor indisponível" in estimate for estimate in result["estimates"])
+        )
+
+    def test_personalized_buy_or_sell_question_is_refused_with_profile_risks(self):
+        context = FinancialContextService(
+            transactions=[],
+            accounts=[],
+            categories=[],
+            bills=[],
+            budgets=[],
+            goals=[],
+            recurring=[],
+            investment_context={
+                "status": "disponivel",
+                "posicoes": [],
+                "custo_investido_centavos": 0,
+                "resultado_realizado_centavos": 0,
+                "proventos_recebidos_centavos": 0,
+                "valor_mercado_centavos": 0,
+                "resultado_nao_realizado_centavos": 0,
+                "rentabilidade_simples_percentual": None,
+                "ativo_aberto": None,
+                "perfil_educativo": {
+                    "disponivel": True,
+                    "perfil": "Moderado",
+                    "ponto_atencao": "Considere os riscos de perda.",
+                },
+            },
+        )
+        result = FinancialOrchestrator(client=Mock()).answer(
+            "Devo comprar PETR4?",
+            [],
+            context,
+        )
+
+        self.assertIn("Não posso indicar", result["answer"])
+        self.assertTrue(
+            any("riscos de perda" in estimate for estimate in result["estimates"])
+        )
+        self.assertTrue(
+            any("não é autorização" in estimate for estimate in result["estimates"])
+        )
 
 
 if __name__ == "__main__":

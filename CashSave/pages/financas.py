@@ -99,6 +99,7 @@ def secao(titulo: str, *children: rx.Component) -> rx.Component:
         border="1px solid rgba(148,163,184,0.15)",
         border_radius="18px",
         padding="1.2em",
+        class_name="cashsave-panel",
     )
 
 
@@ -136,6 +137,7 @@ def financas_conteudo() -> rx.Component:
                 border="1px solid rgba(148,163,184,0.15)",
                 border_radius="18px",
                 padding="1.1em",
+                class_name="cashsave-panel",
             ),
             rx.card(
                 rx.vstack(
@@ -146,6 +148,7 @@ def financas_conteudo() -> rx.Component:
                 border="1px solid rgba(148,163,184,0.15)",
                 border_radius="18px",
                 padding="1.1em",
+                class_name="cashsave-panel",
             ),
             rx.card(
                 rx.vstack(
@@ -156,6 +159,7 @@ def financas_conteudo() -> rx.Component:
                 border="1px solid rgba(148,163,184,0.15)",
                 border_radius="18px",
                 padding="1.1em",
+                class_name="cashsave-panel",
             ),
             columns=rx.breakpoints(initial="1", lg="3"),
             spacing="4",
@@ -279,6 +283,7 @@ def financas_conteudo() -> rx.Component:
         align="start",
         background="#0b0d10",
         padding="0",
+        class_name="cashsave-page-content",
     )
 
 

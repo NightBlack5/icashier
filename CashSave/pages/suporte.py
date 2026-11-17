@@ -94,6 +94,7 @@ def cartao_contato(
             align="start",
         ),
         width="100%",
+        class_name="cashsave-panel",
     )
 
 
@@ -187,7 +188,7 @@ def conteudo_suporte() -> rx.Component:
                 externo=True,
             ),
             cartao_redes(),
-            columns="3",
+            columns=rx.breakpoints(initial="1", sm="2", lg="3"),
             spacing="4",
             width="100%",
             margin_top="1em",
@@ -207,13 +208,16 @@ def conteudo_suporte() -> rx.Component:
                 spacing="4",
                 align="start",
                 width="100%",
+                class_name="cashsave-panel",
             ),
             width="100%",
             padding="1.5em",
+            class_name="cashsave-panel",
         ),
         spacing="4",
         align="center",
         width="100%",
         max_width="960px",
         margin_x="auto",
+        class_name="cashsave-page-content",
     )

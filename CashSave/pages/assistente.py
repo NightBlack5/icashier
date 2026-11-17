@@ -373,6 +373,7 @@ def chat() -> rx.Component:
 
         width="100%",
         max_width="1000px",
+        class_name="cashsave-panel",
     )
 
 
@@ -515,6 +516,7 @@ def assistente() -> rx.Component:
                 align="start",
                 width="100%",
                 min_width="0",
+                class_name="cashsave-page-content",
             ),
         ),
         auth_page(),

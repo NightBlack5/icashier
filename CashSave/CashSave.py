@@ -3,6 +3,7 @@ import reflex as rx
 from .components.layout import app_layout
 from .pages.assistente import assistente
 from .pages.apoiar import conteudo_apoiar
+from .pages.bolsa import bolsa
 from .pages.calendario import calendario_page
 from .pages.financas import financas
 from .pages.landing import landing_page
@@ -224,6 +225,7 @@ def cabecalho(
 
         spacing="1",
         align="start",
+        class_name="cashsave-page-title",
     )
 
 
@@ -309,6 +311,7 @@ def cartao_resumo(
         border="1px solid rgba(148, 163, 184, 0.15)",
         border_radius="16px",
         padding="1.1em",
+        class_name="cashsave-panel",
     )
 
 
@@ -409,6 +412,7 @@ def grafico_visao_geral() -> rx.Component:
         border="1px solid rgba(148,163,184,0.15)",
         border_radius="18px",
         padding="1.2em",
+        class_name="cashsave-panel",
     )
 
 
@@ -728,6 +732,7 @@ def dashboard_conteudo() -> rx.Component:
             padding="1em",
             border="1px solid var(--gray-5)",
             border_radius="12px",
+            class_name="cashsave-panel",
         ),
 
         rx.cond(
@@ -751,6 +756,7 @@ def dashboard_conteudo() -> rx.Component:
                     columns=rx.breakpoints(initial="1", md="2"),
                     spacing="3",
                     width="100%",
+                    class_name="cashsave-panel",
                 ),
                 width="100%",
                 align="start",
@@ -906,125 +912,424 @@ def calendario() -> rx.Component:
     return calendario_page()
 
 
+def checkbox_item(label: str, key: str, valor_padrao: bool = False) -> rx.Component:
+    return rx.checkbox(
+        label,
+        checked=AppState.onboarding_respostas.get(key, valor_padrao).bool(),
+        on_change=lambda value, key=key: AppState.atualizar_onboarding(key, value),
+    )
+
+
+def painel_onboarding() -> rx.Component:
+    porcentagem_etapa = ((AppState.onboarding_etapa + 1) / 6) * 100
+    progresso = rx.cond(
+        porcentagem_etapa < 10,
+        10,
+        rx.cond(
+            porcentagem_etapa > 100,
+            100,
+            porcentagem_etapa,
+        ),
+    )
+    return rx.card(
+        rx.vstack(
+            rx.hstack(
+                rx.heading("Configuração inicial", size="5"),
+                rx.badge(
+                    f"Etapa {AppState.onboarding_etapa + 1}/6",
+                    color_scheme="green",
+                    variant="soft",
+                ),
+                justify="between",
+                width="100%",
+            ),
+            rx.progress(value=progresso, width="100%"),
+            rx.cond(
+                AppState.onboarding_concluido,
+                rx.vstack(
+                    rx.heading("Configuração concluída", size="4"),
+                    rx.text(
+                        "Seu progresso foi salvo. Você pode alterar as respostas e refazer a avaliação quando quiser.",
+                        color_scheme="gray",
+                    ),
+                    rx.button(
+                        "Refazer onboarding",
+                        on_click=AppState.reiniciar_onboarding,
+                        variant="outline",
+                    ),
+                    spacing="3",
+                    align="start",
+                    width="100%",
+                ),
+                rx.vstack(
+                    rx.cond(
+                        AppState.onboarding_etapa == 0,
+                        rx.vstack(
+                            rx.text("Qual é sua renda mensal aproximada?"),
+                            rx.input(
+                                value=str(AppState.onboarding_respostas.get("renda_mensal", "")),
+                                on_change=lambda value: AppState.atualizar_onboarding("renda_mensal", value),
+                                placeholder="Ex.: R$ 5.000,00",
+                            ),
+                            rx.text("Qual é sua principal fonte de renda?"),
+                            rx.select(
+                                ["Salário", "Trabalho autônomo", "Empresa própria", "Renda extra", "Aluguéis", "Outros"],
+                                value=str(AppState.onboarding_respostas.get("fonte_renda", "Salário")),
+                                on_change=lambda value: AppState.atualizar_onboarding("fonte_renda", value),
+                            ),
+                            rx.text("Você recebe salário fixo ou possui renda variável?"),
+                            rx.select(
+                                ["Fixo", "Variável", "Misto"],
+                                value=str(AppState.onboarding_respostas.get("renda_variavel", "Fixo")),
+                                on_change=lambda value: AppState.atualizar_onboarding("renda_variavel", value),
+                            ),
+                            rx.text("Possui outras fontes de renda?"),
+                            rx.hstack(
+                                checkbox_item("Aluguel", "outra_renda_aluguel"),
+                                checkbox_item("Freelance", "outra_renda_freelance"),
+                                checkbox_item("Negócio", "outra_renda_negocio"),
+                                spacing="3",
+                                wrap="wrap",
+                            ),
+                            spacing="3",
+                            width="100%",
+                            align="start",
+                        ),
+                        rx.cond(
+                            AppState.onboarding_etapa == 1,
+                            rx.vstack(
+                                rx.text("Quanto você gasta aproximadamente por mês?"),
+                                rx.input(
+                                    value=str(AppState.onboarding_respostas.get("despesa_mensal", "")),
+                                    on_change=lambda value: AppState.atualizar_onboarding("despesa_mensal", value),
+                                    placeholder="Ex.: R$ 2.500,00",
+                                ),
+                                rx.text("Quais são suas principais despesas?"),
+                                rx.hstack(
+                                    checkbox_item("Moradia", "despesa_moradia"),
+                                    checkbox_item("Alimentação", "despesa_alimentacao"),
+                                    checkbox_item("Transporte", "despesa_transporte"),
+                                    checkbox_item("Educação", "despesa_educacao"),
+                                    spacing="3",
+                                    wrap="wrap",
+                                ),
+                                rx.checkbox(
+                                    "Possui despesas fixas?",
+                                    checked=AppState.onboarding_respostas.get("despesas_fixas", False).bool(),
+                                    on_change=lambda value: AppState.atualizar_onboarding("despesas_fixas", value),
+                                ),
+                                rx.checkbox(
+                                    "Possui dívidas ou parcelamentos?",
+                                    checked=AppState.onboarding_respostas.get("dividas", False).bool(),
+                                    on_change=lambda value: AppState.atualizar_onboarding("dividas", value),
+                                ),
+                                spacing="3",
+                                width="100%",
+                                align="start",
+                            ),
+                            rx.cond(
+                                AppState.onboarding_etapa == 2,
+                                rx.vstack(
+                                    rx.text("Quais são seus principais objetivos financeiros?"),
+                                    rx.hstack(
+                                        checkbox_item("Economizar dinheiro", "objetivo_economizar"),
+                                        checkbox_item("Reserva de emergência", "objetivo_reserva"),
+                                        checkbox_item("Quitar dívidas", "objetivo_dividas"),
+                                        checkbox_item("Comprar imóvel", "objetivo_imovel"),
+                                        spacing="3",
+                                        wrap="wrap",
+                                    ),
+                                    rx.hstack(
+                                        checkbox_item("Comprar veículo", "objetivo_veiculo"),
+                                        checkbox_item("Viajar", "objetivo_viagem"),
+                                        checkbox_item("Construir patrimônio", "objetivo_patrimonio"),
+                                        checkbox_item("Começar a investir", "objetivo_investir"),
+                                        spacing="3",
+                                        wrap="wrap",
+                                    ),
+                                    rx.hstack(
+                                        checkbox_item("Planejar aposentadoria", "objetivo_aposentadoria"),
+                                        spacing="3",
+                                        wrap="wrap",
+                                    ),
+                                    spacing="3",
+                                    width="100%",
+                                    align="start",
+                                ),
+                                rx.cond(
+                                    AppState.onboarding_etapa == 3,
+                                    rx.vstack(
+                                        rx.text("Você possui uma reserva de emergência?"),
+                                        rx.select(
+                                            ["Sim", "Não", "Ainda não defini"],
+                                            value=str(AppState.onboarding_respostas.get("reserva_urgencia", "Ainda não defini")),
+                                            on_change=lambda value: AppState.atualizar_onboarding("reserva_urgencia", value),
+                                        ),
+                                        rx.text("Qual é o valor aproximado?"),
+                                        rx.input(
+                                            value=str(AppState.onboarding_respostas.get("valor_reserva", "")),
+                                            on_change=lambda value: AppState.atualizar_onboarding("valor_reserva", value),
+                                            placeholder="Ex.: R$ 15.000,00",
+                                        ),
+                                        rx.text("Quantos meses de despesas consegue cobrir com ela?"),
+                                        rx.input(
+                                            value=str(AppState.onboarding_respostas.get("meses_reserva", "")),
+                                            on_change=lambda value: AppState.atualizar_onboarding("meses_reserva", value),
+                                            placeholder="Ex.: 6 meses",
+                                        ),
+                                        spacing="3",
+                                        width="100%",
+                                        align="start",
+                                    ),
+                                    rx.cond(
+                                        AppState.onboarding_etapa == 4,
+                                        rx.vstack(
+                                            rx.text("Você já investiu anteriormente?"),
+                                            rx.select(
+                                                ["Sim", "Não", "Quero aprender"],
+                                                value=str(AppState.onboarding_respostas.get("investiu_antes", "Não")),
+                                                on_change=lambda value: AppState.atualizar_onboarding("investiu_antes", value == "Sim"),
+                                            ),
+                                            rx.text("Quais investimentos conhece?"),
+                                            rx.hstack(
+                                                checkbox_item("Renda fixa", "conhece_renda_fixa"),
+                                                checkbox_item("Ações", "conhece_acoes"),
+                                                checkbox_item("Fundos imobiliários", "conhece_fii"),
+                                                spacing="3",
+                                                wrap="wrap",
+                                            ),
+                                            rx.text("Qual é seu nível de conhecimento sobre riscos e oscilações do mercado?"),
+                                            rx.select(
+                                                ["Baixo", "Médio", "Alto"],
+                                                value=str(AppState.onboarding_respostas.get("conhecimento_risco", "Médio")).capitalize(),
+                                                on_change=lambda value: AppState.atualizar_onboarding("conhecimento_risco", value.lower()),
+                                            ),
+                                            spacing="3",
+                                            width="100%",
+                                            align="start",
+                                        ),
+                                        rx.vstack(
+                                            rx.text("Você pretende investir para curto, médio ou longo prazo?"),
+                                            rx.select(
+                                                ["Curto prazo", "Médio prazo", "Longo prazo"],
+                                                value=str(AppState.onboarding_respostas.get("prazo_investimento", "Médio prazo")),
+                                                on_change=lambda value: AppState.atualizar_onboarding("prazo_investimento", value),
+                                            ),
+                                            rx.text("Você prefere investimentos com maior estabilidade ou aceita oscilações?"),
+                                            rx.select(
+                                                ["Maior estabilidade", "Equilíbrio", "Aceito oscilações"],
+                                                value=str(AppState.onboarding_respostas.get("estabilidade", "Equilíbrio")),
+                                                on_change=lambda value: AppState.atualizar_onboarding("estabilidade", value),
+                                            ),
+                                            rx.checkbox(
+                                                "Tem interesse em receber rendimentos periódicos?",
+                                                checked=AppState.onboarding_respostas.get("acessa_rendimentos_periodicos", False).bool(),
+                                                on_change=lambda value: AppState.atualizar_onboarding("acessa_rendimentos_periodicos", value),
+                                            ),
+                                            rx.checkbox(
+                                                "Prefere crescimento do patrimônio?",
+                                                checked=AppState.onboarding_respostas.get("prefere_crescimento", False).bool(),
+                                                on_change=lambda value: AppState.atualizar_onboarding("prefere_crescimento", value),
+                                            ),
+                                            rx.checkbox(
+                                                "Tem interesse em diversificar seus investimentos?",
+                                                checked=AppState.onboarding_respostas.get("prefere_diversificacao", False).bool(),
+                                                on_change=lambda value: AppState.atualizar_onboarding("prefere_diversificacao", value),
+                                            ),
+                                            spacing="3",
+                                            width="100%",
+                                            align="start",
+                                        ),
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                    rx.hstack(
+                        rx.button(
+                            "Voltar",
+                            on_click=AppState.voltar_onboarding,
+                            variant="soft",
+                            disabled=AppState.onboarding_etapa == 0,
+                        ),
+                        rx.button(
+                            "Pular etapa",
+                            on_click=AppState.pular_onboarding,
+                            variant="outline",
+                        ),
+                        rx.button(
+                            "Continuar",
+                            on_click=AppState.avancar_onboarding,
+                            color_scheme="green",
+                        ),
+                        spacing="3",
+                        justify="end",
+                        width="100%",
+                    ),
+                    spacing="4",
+                    width="100%",
+                    align="start",
+                ),
+            ),
+            spacing="4",
+            width="100%",
+            align="start",
+        ),
+        width="100%",
+        max_width="900px",
+        class_name="cashsave-panel",
+    )
+
+
+def painel_perfil_investidor() -> rx.Component:
+    return rx.card(
+        rx.vstack(
+            rx.heading("Meu Perfil de Investidor", size="5"),
+            rx.badge(AppState.investidor_perfil, color_scheme="green"),
+            rx.text(AppState.investidor_descricao, size="3"),
+            rx.heading("Pontos de atenção", size="4"),
+            rx.text(AppState.investidor_pontos_atencao, size="3"),
+            rx.button(
+                "Refazer avaliação",
+                on_click=AppState.reiniciar_onboarding,
+                variant="outline",
+            ),
+            spacing="3",
+            align="start",
+            width="100%",
+        ),
+        width="100%",
+        max_width="900px",
+        class_name="cashsave-panel",
+    )
+
+
 def perfil() -> rx.Component:
     return rx.cond(
         AppState.autenticado,
         page_layout(
             "/perfil",
-            cabecalho("Preferências", "Personalize sua conta CashSave."),
-            rx.card(
-                rx.vstack(
-                    rx.text("Moeda"),
-                    rx.select(
-                        ["BRL", "USD", "EUR"],
-                        value=AppState.moeda,
-                        on_change=AppState.set_moeda,
-                    ),
-                    rx.text("Localidade"),
-                    rx.select(
-                        ["pt-BR", "en-US", "es-ES"],
-                        value=AppState.localidade,
-                        on_change=AppState.set_localidade,
-                    ),
-                    rx.text("Fuso horário"),
-                    rx.input(
-                        value=AppState.fuso_horario,
-                        on_change=AppState.set_fuso_horario,
-                    ),
-                    rx.checkbox(
-                        "Lembretes de vencimento",
-                        checked=AppState.notificacoes_vencimento,
-                        on_change=AppState.set_notificacoes_vencimento,
-                    ),
-                    rx.checkbox(
-                        "Alertas de orçamento",
-                        checked=AppState.notificacoes_orcamento,
-                        on_change=AppState.set_notificacoes_orcamento,
-                    ),
-                    rx.checkbox(
-                        "Alertas de metas financeiras",
-                        checked=AppState.notificacoes_metas,
-                        on_change=AppState.set_notificacoes_metas,
-                        disabled=AppState.notificacoes_metas_disponivel == False,
-                    ),
-                    rx.cond(
-                        AppState.notificacoes_metas_disponivel,
-                        rx.fragment(),
-                        rx.text(
-                            "Os alertas de metas precisam da atualização do Xano.",
-                            size="2",
-                            color_scheme="amber",
+            cabecalho("Preferências", "Personalize sua conta CashSave e complete seu perfil de investidor."),
+            rx.vstack(
+                painel_onboarding(),
+                painel_perfil_investidor(),
+                rx.card(
+                    rx.vstack(
+                        rx.text("Moeda"),
+                        rx.select(
+                            ["BRL", "USD", "EUR"],
+                            value=AppState.moeda,
+                            on_change=AppState.set_moeda,
                         ),
-                    ),
-                    rx.heading("Foto de perfil", size="4"),
-                    rx.text(
-                        "Escolha uma imagem e clique em Enviar foto para atualizar "
-                        "seu avatar.",
-                        size="2",
-                        color_scheme="gray",
-                    ),
-                    rx.avatar(
-                        src=AppState.avatar_url,
-                        fallback="U",
-                        size="6",
-                        radius="full",
-                    ),
-                    rx.upload(
-                        rx.vstack(
-                            rx.text("Escolher uma imagem (PNG, JPG ou WebP)"),
+                        rx.text("Localidade"),
+                        rx.select(
+                            ["pt-BR", "en-US", "es-ES"],
+                            value=AppState.localidade,
+                            on_change=AppState.set_localidade,
+                        ),
+                        rx.text("Fuso horário"),
+                        rx.input(
+                            value=AppState.fuso_horario,
+                            on_change=AppState.set_fuso_horario,
+                        ),
+                        rx.checkbox(
+                            "Lembretes de vencimento",
+                            checked=AppState.notificacoes_vencimento,
+                            on_change=AppState.set_notificacoes_vencimento,
+                        ),
+                        rx.checkbox(
+                            "Alertas de orçamento",
+                            checked=AppState.notificacoes_orcamento,
+                            on_change=AppState.set_notificacoes_orcamento,
+                        ),
+                        rx.checkbox(
+                            "Alertas de metas financeiras",
+                            checked=AppState.notificacoes_metas,
+                            on_change=AppState.set_notificacoes_metas,
+                            disabled=AppState.notificacoes_metas_disponivel == False,
+                        ),
+                        rx.cond(
+                            AppState.notificacoes_metas_disponivel,
+                            rx.fragment(),
                             rx.text(
-                                rx.selected_files("profile-photo"),
-                                size="1",
-                                color_scheme="gray",
+                                "Os alertas de metas precisam da atualização do Xano.",
+                                size="2",
+                                color_scheme="amber",
                             ),
-                            spacing="1",
                         ),
-                        id="profile-photo",
-                        accept={
-                            "image/png": [".png"],
-                            "image/jpeg": [".jpg", ".jpeg"],
-                            "image/webp": [".webp"],
-                        },
-                        max_files=1,
-                        border="1px dashed var(--gray-7)",
-                        padding="1em",
+                        rx.heading("Foto de perfil", size="4"),
+                        rx.text(
+                            "Escolha uma imagem e clique em Enviar foto para atualizar "
+                            "seu avatar.",
+                            size="2",
+                            color_scheme="gray",
+                        ),
+                        rx.avatar(
+                            src=AppState.avatar_url,
+                            fallback="U",
+                            size="6",
+                            radius="full",
+                        ),
+                        rx.upload(
+                            rx.vstack(
+                                rx.text("Escolher uma imagem (PNG, JPG ou WebP)"),
+                                rx.text(
+                                    rx.selected_files("profile-photo"),
+                                    size="1",
+                                    color_scheme="gray",
+                                ),
+                                spacing="1",
+                            ),
+                            id="profile-photo",
+                            accept={
+                                "image/png": [".png"],
+                                "image/jpeg": [".jpg", ".jpeg"],
+                                "image/webp": [".webp"],
+                            },
+                            max_files=1,
+                            border="1px dashed var(--gray-7)",
+                            padding="1em",
+                            width="100%",
+                            on_drop=AppState.enviar_foto_perfil(
+                                rx.upload_files(upload_id="profile-photo")
+                            ),
+                        ),
+                        rx.button(
+                            "Enviar foto",
+                            on_click=AppState.enviar_foto_perfil(
+                                rx.upload_files(upload_id="profile-photo")
+                            ),
+                            variant="outline",
+                            disabled=AppState.autenticado == False,
+                        ),
+                        rx.button(
+                            "Remover foto",
+                            on_click=AppState.remover_foto_perfil,
+                            variant="ghost",
+                            disabled=AppState.autenticado == False,
+                        ),
+                        rx.button(
+                            "Salvar preferências",
+                            on_click=AppState.salvar_preferencias,
+                            color_scheme="green",
+                        ),
+                        rx.text(AppState.aviso, color_scheme="green"),
+                        rx.text(AppState.erro, color_scheme="red"),
+                        spacing="3",
                         width="100%",
-                        on_drop=AppState.enviar_foto_perfil(
-                            rx.upload_files(upload_id="profile-photo")
-                        ),
+                        align="start",
                     ),
-                    rx.button(
-                        "Enviar foto",
-                        on_click=AppState.enviar_foto_perfil(
-                            rx.upload_files(upload_id="profile-photo")
-                        ),
-                        variant="outline",
-                        disabled=AppState.autenticado == False,
-                    ),
-                    rx.button(
-                        "Remover foto",
-                        on_click=AppState.remover_foto_perfil,
-                        variant="ghost",
-                        disabled=AppState.autenticado == False,
-                    ),
-                    rx.button(
-                        "Salvar preferências",
-                        on_click=AppState.salvar_preferencias,
-                        color_scheme="green",
-                    ),
-                    rx.text(AppState.aviso, color_scheme="green"),
-                    rx.text(AppState.erro, color_scheme="red"),
-                    spacing="3",
                     width="100%",
-                    align="start",
+                    max_width="900px",
+                    class_name="cashsave-panel",
                 ),
+                spacing="5",
                 width="100%",
-                max_width="640px",
+                align="start",
             ),
         ),
         auth_page(),
     )
-
 
 def sobre() -> rx.Component:
     return page_layout(
@@ -1051,7 +1356,12 @@ def apoiar() -> rx.Component:
 # APLICAÇÃO
 # ============================================================
 
-app = rx.App(stylesheets=["/password-visibility.css"])
+app = rx.App(
+    stylesheets=[
+        "/cashsave-theme.css",
+        "/password-visibility.css",
+    ]
+)
 
 app.add_page(
     landing_page,
@@ -1092,6 +1402,13 @@ app.add_page(
     route="/financas",
     title="CashSave | Finanças",
     on_load=AppState.carregar_dados,
+)
+
+app.add_page(
+    bolsa,
+    route="/bolsa",
+    title="CashSave | Bolsa de Valores",
+    on_load=AppState.carregar_bolsa,
 )
 
 app.add_page(

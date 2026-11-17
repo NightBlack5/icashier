@@ -78,6 +78,7 @@ def hero_sobre() -> rx.Component:
         ),
         border_radius="18px",
         padding="2em",
+        class_name="cashsave-panel",
     )
 
 
@@ -167,7 +168,7 @@ def recursos() -> rx.Component:
                     "Suas informações são protegidas com recursos de segurança "
                     "e boas práticas de privacidade.",
                 ),
-                columns="2",
+                columns=rx.breakpoints(initial="1", sm="2"),
                 spacing="5",
                 width="100%",
                 max_width="950px",
@@ -219,6 +220,7 @@ def sobre_projeto() -> rx.Component:
         max_width="950px",
         padding="2em",
         border_radius="16px",
+        class_name="cashsave-panel",
     )
 
 
@@ -230,4 +232,5 @@ def conteudo_sobre() -> rx.Component:
         spacing="5",
         align="center",
         width="100%",
+        class_name="cashsave-page-content",
     )

@@ -19,6 +19,29 @@ diretório, não os arquivos de exemplo em `xano/api/authentication/`.
 Publique também `table/recorrencias.xs` antes de publicar as quatro rotas de
 recorrência.
 
+Para a Bolsa de Valores, publique primeiro
+`table/investimento_operacoes.xs`, `table/investimento_proventos.xs` e
+`table/investimento_favoritos.xs` e `table/investimento_alertas.xs`, depois
+as funções `function/cashsave/aplicar_operacao_investimento.xs` e
+`function/cashsave/validar_historico_operacoes.xs`, e então as rotas:
+
+- `GET` e `POST /investimentos/operacoes`
+- `PATCH` e `DELETE /investimentos/operacoes/{operacao_id}`
+- `GET` e `POST /investimentos/proventos`
+- `PATCH` e `DELETE /investimentos/proventos/{provento_id}`
+- `GET` e `POST /investimentos/favoritos`
+- `DELETE /investimentos/favoritos/{ativo_codigo}`
+- `GET` e `POST /investimentos/alertas`
+- `DELETE /investimentos/alertas/{alerta_id}`
+
+Todas as rotas de investimento exigem autenticação e derivam `usuario_id` de
+`$auth.id`; não adicione esse campo aos inputs públicos.
+As mutações de operações revalidam a sequência cronológica de compras e vendas
+antes de gravar, editar ou remover um lançamento.
+Confirme também que o workspace executa a revalidação e a gravação sob a
+garantia transacional/serial confirmada para a carteira antes de habilitar as
+rotas em produção.
+
 No Xano, `precondition` continua o fluxo quando a condição é verdadeira e
 dispara o erro quando ela é falsa. No login, portanto, a definição correta é:
 
@@ -42,6 +65,9 @@ Depois da publicação, confirme no painel:
   `contas_a_pagar`, `orcamentos`, `metas`, `recorrencias` e `preferencias`;
 - `GET /recorrencias` existe e exige autenticação;
 - as consultas usam `$auth.id` para filtrar os dados do usuário.
+- as rotas de proventos exigem data de pagamento para status `pago`, e
+  registros `anunciado` não entram nos totais recebidos;
+- operações e proventos de dois usuários de teste permanecem isolados entre si.
 
 Não publique os arquivos em `xano/api/authentication/` para o grupo
 `cashsave`: eles pertencem ao exemplo genérico do Reflex/Xano e possuem

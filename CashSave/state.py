@@ -5,23 +5,25 @@ import io
 import json
 import mimetypes
 import os
+import re
 import secrets
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 import reflex as rx
 from dotenv import load_dotenv
 
+load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+
 from .ai_services import (
     ExpenseCommandError,
     FinancialContextService,
     FinancialOrchestrator,
     OllamaError,
-    ParsedPayableBill,
     complete_payable_bill,
     parse_payable_bill,
     parse_transaction_batch,
@@ -31,8 +33,29 @@ from .expense_reports import (
     generate_expense_pdf,
     is_expense_pdf_request,
 )
+from .market_data import (
+    MarketAsset,
+    MarketDataError,
+    MarketDataNotConfigured,
+    MarketMover,
+    market_data_service,
+)
+from .investment_portfolio import (
+    InvestmentOperation,
+    calculate_position,
+    validate_operation_mutation,
+)
+from .investment_analytics import (
+    assert_investment_record_owner,
+    calculate_portfolio_snapshot,
+    monthly_investment_flows,
+)
+from .investment_comparison import compare_price_histories
+from .investment_proventos import (
+    format_provento_record,
+    total_received_proventos_centavos,
+)
 
-load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 API_BASE_URL = os.getenv("CASH_SAVE_API_URL", "").rstrip("/")
 
 
@@ -160,6 +183,32 @@ def _formatar_centavos(centavos: int) -> str:
     return f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 
+def _formatar_horario_mercado(reference_at: datetime) -> str:
+    horario_brasilia = reference_at.astimezone(
+        timezone(timedelta(hours=-3), "BRT")
+    )
+    return horario_brasilia.strftime("%d/%m/%Y %H:%M BRT")
+
+
+def _formatar_movimentacao_mercado(
+    mover: MarketMover,
+) -> dict[str, str | float]:
+    price_centavos = int(
+        (mover.price * 100).quantize(
+            Decimal("1"),
+            rounding=ROUND_HALF_UP,
+        )
+    )
+    variation = float(mover.daily_change_percent)
+    return {
+        "symbol": mover.symbol,
+        "name": mover.name,
+        "price": _formatar_centavos(price_centavos),
+        "variation": variation,
+        "variation_display": f"{variation:+.2f}%".replace(".", ","),
+    }
+
+
 def _records_with_money(
     response: object,
     amount_key: str,
@@ -186,6 +235,23 @@ def _money_to_cents(value: str) -> int:
         raise XanoAPIError("Informe um valor monetário válido.") from error
     if not amount.is_finite() or amount <= 0:
         raise XanoAPIError("O valor deve ser maior que zero.")
+    return int(
+        (amount * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    )
+
+
+def _nonnegative_money_to_cents(value: str) -> int:
+    normalized_value = value.replace("R$", "").replace(" ", "").strip()
+    if not normalized_value:
+        return 0
+    if "," in normalized_value:
+        normalized_value = normalized_value.replace(".", "").replace(",", ".")
+    try:
+        amount = Decimal(normalized_value)
+    except InvalidOperation as error:
+        raise XanoAPIError("Informe um custo monetário válido.") from error
+    if not amount.is_finite() or amount < 0:
+        raise XanoAPIError("Os custos não podem ser negativos.")
     return int(
         (amount * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
     )
@@ -426,6 +492,20 @@ class AppState(rx.State):
     notificacoes_orcamento: bool = True
     notificacoes_metas: bool = True
     notificacoes_metas_disponivel: bool = False
+    onboarding_storage: str = rx.LocalStorage(
+        "{}",
+        name="cashsave_onboarding_state",
+    )
+    onboarding_respostas: dict[str, object] = {}
+    onboarding_etapa: int = 0
+    onboarding_concluido: bool = False
+    investidor_perfil: str = "Ainda não avaliado"
+    investidor_descricao: str = (
+        "Complete o onboarding para entender melhor o seu perfil de investidor."
+    )
+    investidor_pontos_atencao: str = (
+        "Use a avaliação como referência de contexto para o Jarvis e as metas financeiras."
+    )
     dados_carregados: bool = False
     transacao_busca: str = ""
     transacao_filtro_tipo: str = "todas"
@@ -453,6 +533,80 @@ class AppState(rx.State):
     ]
     assistente_mensagem: str = ""
     assistente_carregando: bool = False
+    bolsa_carregando: bool = False
+    bolsa_erro: str = ""
+    bolsa_carteira_erro: str = ""
+    bolsa_indisponivel: str = (
+        "Nenhum provedor de dados de mercado aprovado está configurado."
+    )
+    bolsa_indicadores: list[dict[str, str]] = []
+    bolsa_altas: list[dict] = []
+    bolsa_baixas: list[dict] = []
+    bolsa_grafico_altas: list[dict] = []
+    bolsa_movers_origem: str = ""
+    bolsa_movers_referencia: str = ""
+    bolsa_movers_atrasado: bool = False
+    bolsa_busca: str = ""
+    bolsa_categoria: str = "todas"
+    bolsa_ordenacao: str = "codigo"
+    bolsa_ativos: list[dict[str, str]] = []
+    bolsa_ativo_selecionado: str = ""
+    bolsa_detalhe: dict[str, str] = {}
+    bolsa_periodo: str = "1 mês"
+    bolsa_historico: list[dict] = []
+    bolsa_historico_mensagem: str = (
+        "Selecione um período para consultar o histórico disponível."
+    )
+    bolsa_historico_origem: str = ""
+    bolsa_operacoes: list[dict] = []
+    bolsa_proventos: list[dict] = []
+    bolsa_proventos_total_geral: str = "R$ 0,00"
+    bolsa_proventos_total_ano: str = "R$ 0,00"
+    bolsa_proventos_total_mes: str = "R$ 0,00"
+    bolsa_favoritos: list[dict] = []
+    bolsa_carteira: dict[str, str] = {
+        "custo_investido": "R$ 0,00",
+        "total_aplicado": "R$ 0,00",
+        "resultado_realizado": "R$ 0,00",
+        "valor_mercado": "Indisponível",
+        "resultado_nao_realizado": "Indisponível",
+        "rentabilidade": "Indisponível",
+    }
+    bolsa_carteira_posicoes: list[dict] = []
+    bolsa_carteira_alocacao: list[dict] = []
+    bolsa_carteira_evolucao: list[dict] = []
+    bolsa_carteira_aviso: str = ""
+    bolsa_comparacao_ativos: str = ""
+    bolsa_comparacao_periodo: str = "1 mês"
+    bolsa_comparacao_series: list[dict] = []
+    bolsa_comparacao_linhas: list[dict] = []
+    bolsa_comparacao_desempenho: list[dict] = []
+    bolsa_comparacao_fontes: list[dict] = []
+    bolsa_comparacao_aviso: str = ""
+    bolsa_alertas: list[dict] = []
+    bolsa_alerta_codigo: str = ""
+    bolsa_alerta_categoria: str = "acao"
+    bolsa_alerta_condicao: str = "preco_acima"
+    bolsa_alerta_preco: str = ""
+    bolsa_alerta_percentual: str = ""
+    bolsa_provento_codigo: str = ""
+    bolsa_provento_categoria: str = "acao"
+    bolsa_provento_tipo: str = "dividendo"
+    bolsa_provento_status: str = "pago"
+    bolsa_provento_valor: str = ""
+    bolsa_provento_quantidade: str = ""
+    bolsa_provento_data_anuncio: str = ""
+    bolsa_provento_data_pagamento: str = ""
+    bolsa_provento_observacoes: str = ""
+    bolsa_operacao_codigo: str = ""
+    bolsa_operacao_categoria: str = "acao"
+    bolsa_operacao_tipo: str = "compra"
+    bolsa_operacao_data: str = date.today().isoformat()
+    bolsa_operacao_quantidade: str = ""
+    bolsa_operacao_preco: str = ""
+    bolsa_operacao_custos: str = ""
+    bolsa_operacao_observacoes: str = ""
+    bolsa_operacao_edicao_id: int = 0
 
     @rx.var
     def autenticado(self) -> bool:
@@ -494,6 +648,124 @@ class AppState(rx.State):
             ensure_ascii=False,
             separators=(",", ":"),
         )
+
+    def _carregar_onboarding_local(self):
+        try:
+            payload = json.loads(self.onboarding_storage or "{}")
+        except (TypeError, json.JSONDecodeError):
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        respostas = payload.get("respostas")
+        if isinstance(respostas, dict):
+            self.onboarding_respostas = respostas
+        else:
+            self.onboarding_respostas = {}
+        etapa = payload.get("etapa", 0)
+        try:
+            self.onboarding_etapa = int(etapa)
+        except (TypeError, ValueError):
+            self.onboarding_etapa = 0
+        if self.onboarding_etapa < 0:
+            self.onboarding_etapa = 0
+        if self.onboarding_etapa > 5:
+            self.onboarding_etapa = 5
+        self.onboarding_concluido = bool(payload.get("concluido", False))
+        if self.onboarding_respostas:
+            self._atualizar_perfil_investidor()
+
+    def _salvar_onboarding_local(self):
+        payload = {
+            "etapa": self.onboarding_etapa,
+            "concluido": self.onboarding_concluido,
+            "respostas": self.onboarding_respostas,
+        }
+        self.onboarding_storage = json.dumps(
+            payload,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+
+    def _atualizar_perfil_investidor(self):
+        respostas = self.onboarding_respostas or {}
+        score = 0
+        conhecimento = str(respostas.get("conhecimento_risco", "")).lower()
+        prazo = str(respostas.get("prazo_investimento", "")).lower()
+        estabilidade = str(respostas.get("estabilidade", "")).lower()
+        renda_variavel = str(respostas.get("renda_variavel", "")).lower()
+
+        if conhecimento == "baixo":
+            score += 10
+        elif conhecimento == "medio":
+            score += 25
+        elif conhecimento == "alto":
+            score += 40
+
+        if respostas.get("investiu_antes"):
+            score += 12
+        if respostas.get("acessa_rendimentos_periodicos"):
+            score += 8
+        if respostas.get("prefere_diversificacao"):
+            score += 8
+        if renda_variavel == "variavel":
+            score += 12
+        if renda_variavel == "fixo":
+            score -= 6
+
+        if prazo == "curto":
+            score += 8
+        elif prazo == "medio":
+            score += 18
+        elif prazo == "longo":
+            score += 24
+
+        if estabilidade == "estabilidade":
+            score += 8
+        elif estabilidade == "equilibrado":
+            score += 18
+        elif estabilidade == "oscilacoes":
+            score += 28
+
+        if respostas.get("tem_reserva_urgencia"):
+            score += 6
+        if respostas.get("objetivos"):
+            score += min(len(respostas.get("objetivos", [])) * 4, 16)
+
+        score = max(0, min(score, 100))
+
+        if score <= 38:
+            perfil = "Conservador"
+            descricao = (
+                "Você tende a valorizar segurança, previsibilidade e menor volatilidade. "
+                "O perfil indica prioridade a preservação e objetivos de curto a médio prazo."
+            )
+            atencao = (
+                "Mantenha reservas de emergência e prefira investimentos com baixas oscilações. "
+                "Avalie sempre a liquidez antes de comprometer o patrimônio."
+            )
+        elif score <= 72:
+            perfil = "Moderado"
+            descricao = (
+                "Seu contexto mostra equilíbrio entre segurança e crescimento, com alguma tolerância a oscilações. "
+                "Esse perfil costuma funcionar bem com diversificação e objetivos bem definidos."
+            )
+            atencao = (
+                "Continue diversificando e revisando o seu horizonte de investimento. "
+                "Evite assumir riscos incompatíveis com a sua capacidade de absorver perdas."
+            )
+        else:
+            perfil = "Arrojado"
+            descricao = (
+                "Você demonstra disposição para aceitar maior volatilidade em busca de crescimento e ganhos de longo prazo. "
+                "Esse perfil pode suportar mais oscilações, mas continua exigindo atenção à disciplina."
+            )
+            atencao = (
+                "Mesmo com maior tolerância ao risco, mantenha uma reserva de emergência e entenda muito bem os cenários de perda antes de ampliar posições."
+            )
+
+        self.investidor_perfil = perfil
+        self.investidor_descricao = descricao
+        self.investidor_pontos_atencao = atencao
 
     @rx.var
     def total_receitas(self) -> str:
@@ -925,6 +1197,58 @@ class AppState(rx.State):
         self.assistente_conversa_id = 0
         self.assistente_mensagens = []
         self.assistente_mensagem = ""
+        self.bolsa_carregando = False
+        self.bolsa_erro = ""
+        self.bolsa_carteira_erro = ""
+        self.bolsa_indicadores = []
+        self.bolsa_altas = []
+        self.bolsa_baixas = []
+        self.bolsa_grafico_altas = []
+        self.bolsa_movers_origem = ""
+        self.bolsa_movers_referencia = ""
+        self.bolsa_movers_atrasado = False
+        self.bolsa_ativos = []
+        self.bolsa_ativo_selecionado = ""
+        self.bolsa_detalhe = {}
+        self.bolsa_historico = []
+        self.bolsa_historico_origem = ""
+        self.bolsa_operacoes = []
+        self.bolsa_proventos = []
+        self.bolsa_proventos_total_geral = "R$ 0,00"
+        self.bolsa_proventos_total_ano = "R$ 0,00"
+        self.bolsa_proventos_total_mes = "R$ 0,00"
+        self.bolsa_favoritos = []
+        self.bolsa_carteira = {
+            "custo_investido": "R$ 0,00",
+            "total_aplicado": "R$ 0,00",
+            "resultado_realizado": "R$ 0,00",
+            "valor_mercado": "Indisponível",
+            "resultado_nao_realizado": "Indisponível",
+            "rentabilidade": "Indisponível",
+        }
+        self.bolsa_carteira_posicoes = []
+        self.bolsa_carteira_alocacao = []
+        self.bolsa_carteira_evolucao = []
+        self.bolsa_carteira_aviso = ""
+        self.bolsa_comparacao_series = []
+        self.bolsa_comparacao_linhas = []
+        self.bolsa_comparacao_desempenho = []
+        self.bolsa_comparacao_fontes = []
+        self.bolsa_comparacao_aviso = ""
+        self.bolsa_comparacao_ativos = ""
+        self.bolsa_comparacao_periodo = "1 mês"
+        self.bolsa_alertas = []
+        self.bolsa_alerta_codigo = ""
+        self.bolsa_alerta_preco = ""
+        self.bolsa_alerta_percentual = ""
+        self.bolsa_alerta_condicao = "preco_acima"
+        self.bolsa_provento_codigo = ""
+        self.bolsa_provento_valor = ""
+        self.bolsa_provento_quantidade = ""
+        self.bolsa_provento_data_anuncio = ""
+        self.bolsa_provento_data_pagamento = ""
+        self.bolsa_provento_observacoes = ""
+        self.bolsa_operacao_edicao_id = 0
         self.auth_password = ""
         self.auth_password_confirmation = ""
         self.auth_name = ""
@@ -1191,6 +1515,7 @@ class AppState(rx.State):
                 "notificacoes_metas",
                 True,
             )
+            self._carregar_onboarding_local()
             self.dados_carregados = True
             if self.recorrencias_disponiveis:
                 try:
@@ -1215,6 +1540,1306 @@ class AppState(rx.State):
     @rx.event
     async def atualizar_dados(self):
         return await self._carregar_dados(force=True)
+
+    @rx.event
+    async def carregar_bolsa(self):
+        if not self.auth_token:
+            return rx.redirect("/login")
+
+        self.bolsa_carregando = True
+        self.bolsa_erro = ""
+        self.bolsa_carteira_erro = ""
+        self.bolsa_indicadores = []
+        self.bolsa_altas = []
+        self.bolsa_baixas = []
+        self.bolsa_grafico_altas = []
+        self.bolsa_movers_origem = ""
+        self.bolsa_movers_referencia = ""
+        self.bolsa_movers_atrasado = False
+        try:
+            if market_data_service.configured:
+                try:
+                    movers = await asyncio.to_thread(
+                        market_data_service.market_movers,
+                        5,
+                    )
+                    self.bolsa_altas = [
+                        _formatar_movimentacao_mercado(mover)
+                        for mover in movers.gainers
+                    ]
+                    self.bolsa_baixas = [
+                        _formatar_movimentacao_mercado(mover)
+                        for mover in movers.losers
+                    ]
+                    self.bolsa_grafico_altas = [
+                        {
+                            "symbol": mover["symbol"],
+                            "variation": mover["variation"],
+                        }
+                        for mover in self.bolsa_altas
+                    ]
+                    self.bolsa_movers_origem = movers.source
+                    self.bolsa_movers_referencia = (
+                        _formatar_horario_mercado(movers.reference_at)
+                        if movers.gainers or movers.losers
+                        else ""
+                    )
+                    self.bolsa_movers_atrasado = movers.stale
+                    self.bolsa_indisponivel = (
+                        ""
+                        if self.bolsa_altas or self.bolsa_baixas
+                        else "A fonte não encontrou ações ativas com volume e "
+                        "variação diária verificáveis."
+                    )
+                except (MarketDataError, ValueError) as error:
+                    self.bolsa_erro = str(error)
+                    self.bolsa_indisponivel = (
+                        "Não foi possível carregar os destaques da bolsa."
+                    )
+            else:
+                self.bolsa_indisponivel = (
+                    "Configure CASHSAVE_BRAPI_TOKEN no arquivo .env para "
+                    "consultar dados de mercado."
+                )
+
+            self.erro = ""
+            await self._carregar_dados()
+            if not self.auth_token:
+                return rx.redirect("/login")
+            if self.erro:
+                self.bolsa_carteira_erro = self.erro
+            try:
+                await self._carregar_favoritos_bolsa()
+                await self._carregar_alertas_bolsa()
+                await self._carregar_operacoes_bolsa()
+                await self._carregar_proventos_bolsa()
+                await self._carregar_analise_carteira_bolsa()
+            except (XanoAPIError, ValueError) as error:
+                self.bolsa_carteira_erro = str(error)
+        finally:
+            self.bolsa_carregando = False
+
+    @rx.event
+    def set_bolsa_busca(self, value: str):
+        self.bolsa_busca = value
+
+    @rx.event
+    def set_bolsa_categoria(self, value: str):
+        self.bolsa_categoria = value
+
+    @rx.event
+    def set_bolsa_ordenacao(self, value: str):
+        self.bolsa_ordenacao = value
+
+    @rx.event
+    def set_bolsa_periodo(self, value: str):
+        self.bolsa_periodo = value
+
+    @rx.event
+    def set_bolsa_comparacao_ativos(self, value: str):
+        self.bolsa_comparacao_ativos = value
+
+    @rx.event
+    def set_bolsa_comparacao_periodo(self, value: str):
+        self.bolsa_comparacao_periodo = value
+
+    @rx.event
+    async def comparar_ativos_bolsa(self):
+        if not self.auth_token:
+            return rx.redirect("/login")
+        symbols = list(
+            dict.fromkeys(
+                symbol.strip().upper()
+                for symbol in self.bolsa_comparacao_ativos.split(",")
+                if symbol.strip()
+            )
+        )
+        self.bolsa_comparacao_series = []
+        self.bolsa_comparacao_linhas = []
+        self.bolsa_comparacao_desempenho = []
+        self.bolsa_comparacao_fontes = []
+        self.bolsa_comparacao_aviso = ""
+        if len(symbols) < 2:
+            self.bolsa_comparacao_aviso = (
+                "Informe pelo menos dois códigos de ativos separados por vírgula."
+            )
+            return
+        periods = {
+            "1 mês": "1m",
+            "6 meses": "6m",
+            "1 ano": "1y",
+            "5 anos": "5y",
+        }
+        period = periods.get(self.bolsa_comparacao_periodo)
+        if period is None:
+            self.bolsa_comparacao_aviso = (
+                "Selecione um período de comparação válido."
+            )
+            return
+
+        histories = {}
+        try:
+            for symbol in symbols:
+                histories[symbol] = await asyncio.to_thread(
+                    market_data_service.history,
+                    symbol,
+                    period,
+                )
+            comparison = compare_price_histories(histories)
+        except (MarketDataError, ValueError) as error:
+            self.bolsa_comparacao_aviso = (
+                f"Não foi possível comparar as séries verificadas: {error}"
+            )
+            return
+
+        if not comparison.complete:
+            missing = "; ".join(
+                f"{symbol}: {missing_date}"
+                for symbol, missing_date in comparison.missing_dates
+            )
+            self.bolsa_comparacao_aviso = (
+                "As séries não cobrem as mesmas datas entre "
+                f"{comparison.start_date} e {comparison.end_date}. "
+                f"Datas sem observação: {missing}. Rentabilidade não calculada."
+            )
+            return
+
+        colors = ["#10b981", "#6366f1", "#f59e0b", "#ec4899", "#06b6d4"]
+        self.bolsa_comparacao_linhas = [
+            {"symbol": symbol, "color": colors[index % len(colors)]}
+            for index, symbol in enumerate(symbols)
+        ]
+        self.bolsa_comparacao_series = [
+            {
+                key: (
+                    float(value)
+                    if isinstance(value, Decimal)
+                    else value
+                )
+                for key, value in row.items()
+            }
+            for row in comparison.series
+        ]
+        self.bolsa_comparacao_desempenho = [
+            {
+                "symbol": symbol,
+                "percentual": f"{performance:.2f}%".replace(".", ","),
+            }
+            for symbol, performance in comparison.performance_percent
+        ]
+        self.bolsa_comparacao_fontes = [
+            {
+                "symbol": symbol,
+                "source": history.source,
+                "reference_at": history.reference_at.isoformat(),
+                "freshness": history.freshness,
+            }
+            for symbol, history in sorted(histories.items())
+        ]
+
+    @rx.event
+    async def pesquisar_ativos(self):
+        if not self.auth_token:
+            return rx.redirect("/login")
+
+        self.bolsa_carregando = True
+        self.bolsa_erro = ""
+        self.bolsa_indisponivel = ""
+        self.bolsa_ativo_selecionado = ""
+        self.bolsa_detalhe = {}
+        self.bolsa_historico = []
+        self.bolsa_historico_origem = ""
+        try:
+            category = (
+                None
+                if self.bolsa_categoria == "todas"
+                else self.bolsa_categoria
+            )
+            sort_by = (
+                "name"
+                if self.bolsa_ordenacao == "nome"
+                else "symbol"
+            )
+            assets = await asyncio.to_thread(
+                market_data_service.search,
+                self.bolsa_busca,
+                category,
+                sort_by,
+            )
+            self.bolsa_ativos = [
+                self._market_asset_record(asset)
+                for asset in assets
+            ]
+            self._atualizar_status_favoritos()
+            if not self.bolsa_ativos:
+                self.bolsa_indisponivel = (
+                    "Nenhum ativo compatível foi encontrado para esta pesquisa."
+                )
+        except MarketDataNotConfigured as error:
+            self.bolsa_ativos = []
+            self.bolsa_indisponivel = str(error)
+        except (MarketDataError, ValueError) as error:
+            self.bolsa_ativos = []
+            self.bolsa_erro = str(error)
+        finally:
+            self.bolsa_carregando = False
+
+    @staticmethod
+    def _market_asset_record(asset: MarketAsset) -> dict[str, str]:
+        category_labels = {
+            "acao": "Ação",
+            "fii": "FII",
+            "etf": "ETF",
+        }
+        return {
+            "symbol": asset.symbol,
+            "name": asset.name,
+            "category": category_labels[asset.category],
+            "category_code": asset.category,
+            "source": asset.source,
+            "stale": "true" if asset.stale else "false",
+            "favorito": "false",
+        }
+
+    def _atualizar_status_favoritos(self):
+        favorite_symbols = {
+            str(favorite.get("ativo_codigo", "")).upper()
+            for favorite in self.bolsa_favoritos
+        }
+        self.bolsa_ativos = [
+            {
+                **asset,
+                "favorito": (
+                    "true"
+                    if asset.get("symbol", "").upper() in favorite_symbols
+                    else "false"
+                ),
+            }
+            for asset in self.bolsa_ativos
+        ]
+
+    async def _carregar_favoritos_bolsa(self):
+        response = await self._api("GET", "investimentos/favoritos")
+        category_labels = {
+            "acao": "Ação",
+            "fii": "FII",
+            "etf": "ETF",
+        }
+        favorites: list[dict[str, str]] = []
+        for record in _records(response):
+            symbol = record.get("ativo_codigo")
+            category = record.get("ativo_categoria")
+            if (
+                not isinstance(symbol, str)
+                or not symbol.strip()
+                or category not in category_labels
+            ):
+                raise XanoAPIError("O Xano retornou um favorito inválido.")
+            favorites.append(
+                {
+                    "ativo_codigo": symbol.strip().upper(),
+                    "ativo_categoria": str(category),
+                    "categoria_formatada": category_labels[str(category)],
+                }
+            )
+        self.bolsa_favoritos = favorites
+        self._atualizar_status_favoritos()
+
+    async def _carregar_alertas_bolsa(self):
+        response = await self._api("GET", "investimentos/alertas")
+        labels = {
+            "preco_acima": "Preço acima de",
+            "preco_abaixo": "Preço abaixo de",
+            "variacao_diaria_acima": "Variação diária acima de",
+            "variacao_diaria_abaixo": "Variação diária abaixo de",
+        }
+        alerts: list[dict[str, str]] = []
+        for record in _records(response):
+            condition = record.get("condicao")
+            symbol = record.get("ativo_codigo")
+            monitoring_status = record.get("monitoramento_status")
+            if (
+                not isinstance(condition, str)
+                or condition not in labels
+                or not isinstance(symbol, str)
+                or not symbol.strip()
+            ):
+                raise XanoAPIError("O Xano retornou um alerta inválido.")
+            if monitoring_status != "nao_monitorado":
+                raise XanoAPIError(
+                    "O Xano retornou um estado de alerta não suportado."
+                )
+            price_limit = record.get("preco_limite_centavos")
+            percentage_limit = record.get("variacao_limite_percentual")
+            if condition.startswith("preco_"):
+                if not isinstance(price_limit, int) or price_limit <= 0:
+                    raise XanoAPIError("O alerta retornado não tem limite válido.")
+                limit = _formatar_centavos(price_limit)
+            else:
+                try:
+                    percentage = Decimal(str(percentage_limit))
+                except InvalidOperation as error:
+                    raise XanoAPIError(
+                        "O alerta retornado não tem percentual válido."
+                    ) from error
+                if not percentage.is_finite() or percentage <= 0:
+                    raise XanoAPIError(
+                        "O alerta retornado não tem percentual válido."
+                    )
+                limit = f"{percentage:.2f}%".replace(".", ",")
+            alerts.append(
+                {
+                    "id": int(record.get("id", 0) or 0),
+                    "ativo_codigo": symbol.strip().upper(),
+                    "ativo_categoria": str(record.get("ativo_categoria", "")),
+                    "condicao": condition,
+                    "condicao_formatada": labels[condition],
+                    "limite_formatado": limit,
+                    "monitoramento_status": "Não monitorado",
+                }
+            )
+        self.bolsa_alertas = alerts
+
+    @rx.event
+    def set_bolsa_alerta_codigo(self, value: str):
+        self.bolsa_alerta_codigo = value
+
+    @rx.event
+    def set_bolsa_alerta_categoria(self, value: str):
+        self.bolsa_alerta_categoria = value
+
+    @rx.event
+    def set_bolsa_alerta_condicao(self, value: str):
+        self.bolsa_alerta_condicao = value
+
+    @rx.event
+    def set_bolsa_alerta_preco(self, value: str):
+        self.bolsa_alerta_preco = value
+
+    @rx.event
+    def set_bolsa_alerta_percentual(self, value: str):
+        self.bolsa_alerta_percentual = value
+
+    @rx.event
+    async def salvar_alerta_bolsa(self):
+        if not self.auth_token:
+            return rx.redirect("/login")
+        symbol = self.bolsa_alerta_codigo.strip().upper()
+        if not symbol:
+            self.bolsa_erro = "Informe o código do ativo para o alerta."
+            return
+        if self.bolsa_alerta_categoria not in {"acao", "fii", "etf"}:
+            self.bolsa_erro = "Selecione uma categoria de ativo válida."
+            return
+
+        payload: dict[str, object] = {
+            "ativo_codigo": symbol,
+            "ativo_categoria": self.bolsa_alerta_categoria,
+            "condicao": self.bolsa_alerta_condicao,
+            "preco_limite_centavos": None,
+            "variacao_limite_percentual": None,
+        }
+        try:
+            if self.bolsa_alerta_condicao in {"preco_acima", "preco_abaixo"}:
+                payload["preco_limite_centavos"] = _money_to_cents(
+                    self.bolsa_alerta_preco
+                )
+            elif self.bolsa_alerta_condicao in {
+                "variacao_diaria_acima",
+                "variacao_diaria_abaixo",
+            }:
+                try:
+                    percentage = Decimal(
+                        self.bolsa_alerta_percentual.strip().replace(",", ".")
+                    )
+                except InvalidOperation as error:
+                    raise XanoAPIError(
+                        "Informe um percentual de variação válido."
+                    ) from error
+                if not percentage.is_finite() or percentage <= 0:
+                    raise XanoAPIError(
+                        "O percentual de variação deve ser positivo."
+                    )
+                payload["variacao_limite_percentual"] = format(
+                    percentage,
+                    "f",
+                )
+            else:
+                raise XanoAPIError("Selecione uma condição de alerta válida.")
+
+            saved = _as_record(
+                await self._api(
+                    "POST",
+                    "investimentos/alertas",
+                    payload,
+                )
+            )
+            if not saved.get("id"):
+                raise XanoAPIError("O Xano não confirmou o alerta.")
+            await self._carregar_alertas_bolsa()
+            self.bolsa_alerta_codigo = ""
+            self.bolsa_alerta_preco = ""
+            self.bolsa_alerta_percentual = ""
+        except (XanoAPIError, ValueError) as error:
+            self.bolsa_erro = str(error)
+
+    @rx.event
+    async def excluir_alerta_bolsa(self, alert_id: int):
+        if not self.auth_token:
+            return rx.redirect("/login")
+        try:
+            await self._api("DELETE", f"investimentos/alertas/{alert_id}")
+            await self._carregar_alertas_bolsa()
+        except (XanoAPIError, ValueError) as error:
+            self.bolsa_erro = str(error)
+
+    @rx.event
+    async def alternar_favorito_bolsa(self, symbol: str, category: str):
+        if not self.auth_token:
+            return rx.redirect("/login")
+        normalized_symbol = symbol.strip().upper()
+        if not normalized_symbol or category not in {"acao", "fii", "etf"}:
+            self.bolsa_erro = "Ativo inválido para favoritos."
+            return
+        self.bolsa_erro = ""
+        favorite = next(
+            (
+                item
+                for item in self.bolsa_favoritos
+                if item.get("ativo_codigo") == normalized_symbol
+            ),
+            None,
+        )
+        try:
+            if favorite is not None:
+                await self._api(
+                    "DELETE",
+                    "investimentos/favoritos/"
+                    + quote(normalized_symbol, safe=""),
+                )
+            else:
+                saved = _as_record(
+                    await self._api(
+                        "POST",
+                        "investimentos/favoritos",
+                        {
+                            "ativo_codigo": normalized_symbol,
+                            "ativo_categoria": category,
+                        },
+                    )
+                )
+                if not saved.get("id"):
+                    raise XanoAPIError("O Xano não confirmou o favorito.")
+            await self._carregar_favoritos_bolsa()
+        except (XanoAPIError, ValueError) as error:
+            self.bolsa_erro = str(error)
+
+    @rx.event
+    async def selecionar_ativo(self, symbol: str):
+        if not self.auth_token:
+            return rx.redirect("/login")
+
+        normalized_symbol = symbol.strip().upper()
+        asset = next(
+            (
+                item
+                for item in self.bolsa_ativos
+                if item["symbol"].upper() == normalized_symbol
+            ),
+            None,
+        )
+        if asset is None:
+            favorite = next(
+                (
+                    item
+                    for item in self.bolsa_favoritos
+                    if item.get("ativo_codigo") == normalized_symbol
+                ),
+                None,
+            )
+            if favorite is not None:
+                asset = {
+                    "symbol": normalized_symbol,
+                    "name": normalized_symbol,
+                    "category": favorite["categoria_formatada"],
+                    "category_code": favorite["ativo_categoria"],
+                }
+        if asset is None:
+            self.bolsa_erro = "Selecione um ativo retornado pela pesquisa."
+            return
+
+        self.bolsa_carregando = True
+        self.bolsa_erro = ""
+        self.bolsa_ativo_selecionado = normalized_symbol
+        self.bolsa_detalhe = {}
+        self.bolsa_historico = []
+        self.bolsa_historico_origem = ""
+        self.bolsa_historico_mensagem = (
+            "Selecione um período para consultar o histórico disponível."
+        )
+        try:
+            quote = await asyncio.to_thread(
+                market_data_service.quote,
+                normalized_symbol,
+            )
+            expected_categories = {
+                "Ação": "acao",
+                "FII": "fii",
+                "ETF": "etf",
+            }
+            if quote.category != expected_categories.get(asset["category"]):
+                raise MarketDataError(
+                    "A categoria da cotação não corresponde ao ativo pesquisado."
+                )
+            freshness_labels = {
+                "real_time": "Tempo real",
+                "delayed": "Atrasada",
+                "historical": "Histórica",
+                "unknown": "Desconhecida",
+            }
+            self.bolsa_detalhe = {
+                "symbol": quote.symbol,
+                "name": asset["name"],
+                "category": asset["category"],
+                "category_code": asset["category_code"],
+                "price": f"R$ {quote.price:.2f}".replace(".", ","),
+                "daily_change": (
+                    f"{quote.daily_change_percent:.2f}%".replace(".", ",")
+                    if quote.daily_change_percent is not None
+                    else "Indisponível"
+                ),
+                "source": quote.source,
+                "reference_at": quote.reference_at.isoformat(timespec="minutes"),
+                "freshness": freshness_labels[quote.freshness],
+                "stale": "true" if quote.stale else "false",
+                "category_metrics": (
+                    "Não fornecidas por uma fonte verificada."
+                ),
+            }
+        except MarketDataNotConfigured as error:
+            self.bolsa_erro = str(error)
+            self.bolsa_ativo_selecionado = ""
+        except (MarketDataError, ValueError) as error:
+            self.bolsa_erro = str(error)
+            self.bolsa_ativo_selecionado = ""
+        finally:
+            self.bolsa_carregando = False
+
+    @rx.event
+    async def carregar_historico_bolsa(self):
+        if not self.auth_token:
+            return rx.redirect("/login")
+        if not self.bolsa_ativo_selecionado:
+            self.bolsa_historico_mensagem = "Selecione um ativo primeiro."
+            return
+
+        periods = {
+            "Intraday": "intraday",
+            "1 dia": "1d",
+            "1 semana": "1w",
+            "1 mês": "1m",
+            "6 meses": "6m",
+            "1 ano": "1y",
+            "5 anos": "5y",
+        }
+        period = periods.get(self.bolsa_periodo)
+        if period is None:
+            self.bolsa_historico_mensagem = "Período histórico não suportado."
+            return
+
+        self.bolsa_carregando = True
+        self.bolsa_erro = ""
+        self.bolsa_historico = []
+        self.bolsa_historico_origem = ""
+        try:
+            history = await asyncio.to_thread(
+                market_data_service.history,
+                self.bolsa_ativo_selecionado,
+                period,
+            )
+            self.bolsa_historico = [
+                {
+                    "data": point.observed_at.strftime("%d/%m %H:%M %z"),
+                    "preco": float(point.price),
+                }
+                for point in history.points
+            ]
+            self.bolsa_historico_origem = (
+                f"Fonte: {history.source} · Referência: "
+                f"{history.reference_at.isoformat(timespec='minutes')}"
+            )
+            if history.stale:
+                self.bolsa_historico_origem += " · Histórico desatualizado"
+            if not self.bolsa_historico:
+                self.bolsa_historico_mensagem = (
+                    "A fonte não retornou observações para este período."
+                )
+            else:
+                self.bolsa_historico_mensagem = ""
+        except (MarketDataError, ValueError) as error:
+            self.bolsa_historico_mensagem = str(error)
+        finally:
+            self.bolsa_carregando = False
+
+    @staticmethod
+    def _investment_operation_from_record(
+        record: dict[str, object],
+    ) -> InvestmentOperation:
+        return InvestmentOperation(
+            symbol=str(record.get("ativo_codigo", "")),
+            operation_type=str(record.get("tipo", "")),
+            operation_date=date.fromisoformat(str(record.get("data", ""))[:10]),
+            quantity=Decimal(str(record.get("quantidade", ""))),
+            unit_price_centavos=int(
+                record.get("preco_unitario_centavos", 0) or 0
+            ),
+            costs_centavos=int(record.get("custos_centavos", 0) or 0),
+            operation_id=int(record.get("id", 0) or 0),
+        )
+
+    @staticmethod
+    def _investment_operation_display(
+        operation: InvestmentOperation,
+        category: str,
+        notes: object = "",
+    ) -> dict[str, object]:
+        quantity = format(operation.quantity, "f")
+        if "." in quantity:
+            quantity = quantity.rstrip("0").rstrip(".")
+        return {
+            "id": operation.operation_id,
+            "ativo_codigo": operation.symbol,
+            "ativo_categoria": category,
+            "tipo": operation.operation_type,
+            "data": operation.operation_date.isoformat(),
+            "quantidade": quantity,
+            "preco": _formatar_centavos(operation.unit_price_centavos),
+            "custos": _formatar_centavos(operation.costs_centavos),
+            "observacoes": str(notes or ""),
+        }
+
+    async def _carregar_operacoes_bolsa(self):
+        response = await self._api("GET", "investimentos/operacoes")
+        records = _records(response)
+        formatted_operations: list[dict[str, object]] = []
+        for record in records:
+            operation = self._investment_operation_from_record(record)
+            formatted_operations.append(
+                self._investment_operation_display(
+                    operation,
+                    str(record.get("ativo_categoria", "")),
+                    record.get("observacoes", ""),
+                )
+            )
+        self.bolsa_operacoes = formatted_operations
+
+    async def _carregar_proventos_bolsa(self):
+        response = await self._api("GET", "investimentos/proventos")
+        records = _records(response)
+        proventos = [format_provento_record(record) for record in records]
+        today = date.today()
+        self.bolsa_proventos = proventos
+        self.bolsa_proventos_total_geral = _formatar_centavos(
+            total_received_proventos_centavos(records)
+        )
+        self.bolsa_proventos_total_ano = _formatar_centavos(
+            total_received_proventos_centavos(
+                records,
+                start_date=date(today.year, 1, 1),
+                end_date=today,
+            )
+        )
+        self.bolsa_proventos_total_mes = _formatar_centavos(
+            total_received_proventos_centavos(
+                records,
+                start_date=date(today.year, today.month, 1),
+                end_date=today,
+            )
+        )
+
+    async def _carregar_analise_carteira_bolsa(self):
+        operation_records = _records(
+            await self._api("GET", "investimentos/operacoes")
+        )
+        operations = [
+            self._investment_operation_from_record(record)
+            for record in operation_records
+        ]
+        categories: dict[str, str] = {}
+        for record in operation_records:
+            symbol = str(record.get("ativo_codigo", "")).strip().upper()
+            category = str(record.get("ativo_categoria", ""))
+            if symbol in categories and categories[symbol] != category:
+                raise XanoAPIError(
+                    f"O ativo {symbol} tem categorias inconsistentes no histórico."
+                )
+            categories[symbol] = category
+
+        market_prices: dict[str, int] = {}
+        market_metadata: dict[str, dict[str, str]] = {}
+        unavailable_symbols: list[str] = []
+        stale_symbols: list[str] = []
+        grouped_operations: dict[str, list[InvestmentOperation]] = {}
+        for operation in operations:
+            grouped_operations.setdefault(operation.symbol, []).append(operation)
+        active_symbols = {
+            symbol
+            for symbol, history in grouped_operations.items()
+            if calculate_position(symbol, history).quantity > 0
+        }
+        if market_data_service.configured:
+            for symbol in sorted(active_symbols):
+                try:
+                    quote = await asyncio.to_thread(
+                        market_data_service.quote,
+                        symbol,
+                    )
+                    expected_category = categories[symbol]
+                    if quote.category != expected_category:
+                        raise MarketDataError(
+                            "A categoria da cotação não corresponde à carteira."
+                        )
+                except (MarketDataError, ValueError):
+                    unavailable_symbols.append(symbol)
+                    continue
+                market_prices[symbol] = int(
+                    (quote.price * 100).quantize(
+                        Decimal("1"),
+                        rounding=ROUND_HALF_UP,
+                    )
+                )
+                market_metadata[symbol] = {
+                    "source": quote.source,
+                    "reference_at": quote.reference_at.isoformat(),
+                    "freshness": quote.freshness,
+                    "stale": "true" if quote.stale else "false",
+                }
+                if quote.stale:
+                    stale_symbols.append(symbol)
+
+        snapshot = calculate_portfolio_snapshot(
+            operations,
+            categories,
+            market_prices,
+        )
+        self.bolsa_carteira = {
+            "custo_investido": _formatar_centavos(
+                snapshot.total_cost_basis_centavos
+            ),
+            "total_aplicado": _formatar_centavos(
+                snapshot.total_purchase_outlay_centavos
+            ),
+            "resultado_realizado": _formatar_centavos(
+                snapshot.total_realized_result_centavos
+            ),
+            "valor_mercado": (
+                _formatar_centavos(snapshot.total_market_value_centavos)
+                if snapshot.total_market_value_centavos is not None
+                else "Indisponível"
+            ),
+            "resultado_nao_realizado": (
+                _formatar_centavos(snapshot.total_unrealized_result_centavos)
+                if snapshot.total_unrealized_result_centavos is not None
+                else "Indisponível"
+            ),
+            "rentabilidade": (
+                f"{snapshot.simple_return_percent:.2f}%".replace(".", ",")
+                if snapshot.simple_return_percent is not None
+                else "Indisponível"
+            ),
+        }
+        self.bolsa_carteira_posicoes = []
+        for holding in snapshot.holdings:
+            if holding.position.quantity == 0:
+                continue
+            quantity = format(holding.position.quantity, "f")
+            if "." in quantity:
+                quantity = quantity.rstrip("0").rstrip(".")
+            self.bolsa_carteira_posicoes.append(
+                {
+                    "symbol": holding.symbol,
+                    "category": holding.category.upper(),
+                    "quantity": quantity,
+                    "cost_basis": _formatar_centavos(
+                        holding.position.cost_basis_centavos
+                    ),
+                    "market_value": (
+                        _formatar_centavos(
+                            holding.position.market_value_centavos
+                        )
+                        if holding.position.market_value_centavos is not None
+                        else "Indisponível"
+                    ),
+                    "source": market_metadata.get(holding.symbol, {}).get(
+                        "source",
+                        "Indisponível",
+                    ),
+                    "reference_at": market_metadata.get(holding.symbol, {}).get(
+                        "reference_at",
+                        "",
+                    ),
+                    "freshness": market_metadata.get(holding.symbol, {}).get(
+                        "freshness",
+                        "",
+                    ),
+                    "stale": market_metadata.get(holding.symbol, {}).get(
+                        "stale",
+                        "false",
+                    ),
+                }
+            )
+        self.bolsa_carteira_alocacao = [
+            {
+                "categoria": category.upper(),
+                "valor": _formatar_centavos(value),
+                "percentual": f"{percentage:.2f}%".replace(".", ","),
+            }
+            for category, value, percentage in snapshot.allocation_by_category
+        ]
+        evolution = monthly_investment_flows(operations, self.bolsa_proventos)
+        self.bolsa_carteira_evolucao = [
+            {
+                "periodo": str(flow["periodo"]),
+                "contribuicoes": float(
+                    Decimal(int(flow["contribuicoes_centavos"])) / 100
+                ),
+                "retiradas": float(
+                    Decimal(int(flow["retiradas_centavos"])) / 100
+                ),
+                "proventos": float(
+                    Decimal(int(flow["proventos_centavos"])) / 100
+                ),
+            }
+            for flow in evolution
+        ]
+        if unavailable_symbols:
+            self.bolsa_carteira_aviso = (
+                "Cotações indisponíveis para: "
+                + ", ".join(sorted(unavailable_symbols))
+                + ". Valor de mercado, resultado não realizado, rentabilidade "
+                "e alocação podem estar incompletos."
+            )
+        elif active_symbols and not market_data_service.configured:
+            self.bolsa_carteira_aviso = (
+                "Sem provedor de mercado aprovado; valores de mercado, "
+                "resultado não realizado, rentabilidade e alocação estão "
+                "indisponíveis."
+            )
+        elif stale_symbols:
+            self.bolsa_carteira_aviso = (
+                "Cotações desatualizadas para: "
+                + ", ".join(sorted(stale_symbols))
+                + ". Consulte a referência antes de usar esses valores."
+            )
+        else:
+            self.bolsa_carteira_aviso = ""
+
+    async def _contexto_investimentos_jarvis(self) -> dict[str, object]:
+        owner_id = self.usuario.get("id")
+        operation_records = _records(
+            await self._api("GET", "investimentos/operacoes")
+        )
+        provento_records = _records(
+            await self._api("GET", "investimentos/proventos")
+        )
+        try:
+            assert_investment_record_owner(operation_records, owner_id)
+            assert_investment_record_owner(provento_records, owner_id)
+            operations = [
+                self._investment_operation_from_record(record)
+                for record in operation_records
+            ]
+            categories: dict[str, str] = {}
+            for record in operation_records:
+                symbol = str(record.get("ativo_codigo", "")).strip().upper()
+                category = str(record.get("ativo_categoria", ""))
+                if symbol in categories and categories[symbol] != category:
+                    raise ValueError(
+                        f"O ativo {symbol} tem categorias inconsistentes."
+                    )
+                categories[symbol] = category
+            snapshot = calculate_portfolio_snapshot(
+                operations,
+                categories,
+                {},
+            )
+            positions = [
+                {
+                    "ativo_codigo": holding.symbol,
+                    "ativo_categoria": holding.category.upper(),
+                    "quantidade": format(holding.position.quantity, "f"),
+                    "custo_investido_centavos": (
+                        holding.position.cost_basis_centavos
+                    ),
+                    "resultado_realizado_centavos": (
+                        holding.position.realized_result_centavos
+                    ),
+                }
+                for holding in snapshot.holdings
+                if holding.position.quantity > 0
+            ]
+            proventos_recebidos = total_received_proventos_centavos(
+                provento_records
+            )
+        except ValueError as error:
+            raise XanoAPIError(
+                "Os registros de investimento não puderam ser validados."
+            ) from error
+
+        selected_asset = None
+        if (
+            self.bolsa_ativo_selecionado
+            and self.bolsa_detalhe.get("symbol")
+            == self.bolsa_ativo_selecionado
+            and self.bolsa_detalhe.get("source")
+            and self.bolsa_detalhe.get("reference_at")
+        ):
+            selected_asset = {
+                "symbol": self.bolsa_detalhe["symbol"],
+                "price": self.bolsa_detalhe.get("price", "Indisponível"),
+                "source": self.bolsa_detalhe["source"],
+                "reference_at": self.bolsa_detalhe["reference_at"],
+                "freshness": self.bolsa_detalhe.get(
+                    "freshness",
+                    "Desconhecida",
+                ),
+                "stale": self.bolsa_detalhe.get("stale", "true"),
+            }
+
+        profile_available = bool(
+            self.onboarding_concluido and self.onboarding_respostas
+        )
+        profile_context = (
+            {
+                "disponivel": True,
+                "perfil": self.investidor_perfil,
+                "ponto_atencao": self.investidor_pontos_atencao,
+            }
+            if profile_available
+            else {"disponivel": False}
+        )
+        return {
+            "status": "disponivel",
+            "posicoes": positions,
+            "custo_investido_centavos": snapshot.total_cost_basis_centavos,
+            "total_aplicado_centavos": snapshot.total_purchase_outlay_centavos,
+            "resultado_realizado_centavos": (
+                snapshot.total_realized_result_centavos
+            ),
+            "valor_mercado_centavos": snapshot.total_market_value_centavos,
+            "resultado_nao_realizado_centavos": (
+                snapshot.total_unrealized_result_centavos
+            ),
+            "rentabilidade_simples_percentual": (
+                str(snapshot.simple_return_percent)
+                if snapshot.simple_return_percent is not None
+                else None
+            ),
+            "proventos_recebidos_centavos": proventos_recebidos,
+            "ativo_aberto": selected_asset,
+            "perfil_educativo": profile_context,
+        }
+
+    @rx.event
+    def set_bolsa_provento_codigo(self, value: str):
+        self.bolsa_provento_codigo = value
+
+    @rx.event
+    def set_bolsa_provento_categoria(self, value: str):
+        self.bolsa_provento_categoria = value
+
+    @rx.event
+    def set_bolsa_provento_tipo(self, value: str):
+        self.bolsa_provento_tipo = value
+
+    @rx.event
+    def set_bolsa_provento_status(self, value: str):
+        self.bolsa_provento_status = value
+
+    @rx.event
+    def set_bolsa_provento_valor(self, value: str):
+        self.bolsa_provento_valor = value
+
+    @rx.event
+    def set_bolsa_provento_quantidade(self, value: str):
+        self.bolsa_provento_quantidade = value
+
+    @rx.event
+    def set_bolsa_provento_data_anuncio(self, value: str):
+        self.bolsa_provento_data_anuncio = value
+
+    @rx.event
+    def set_bolsa_provento_data_pagamento(self, value: str):
+        self.bolsa_provento_data_pagamento = value
+
+    @rx.event
+    def set_bolsa_provento_observacoes(self, value: str):
+        self.bolsa_provento_observacoes = value
+
+    def _nova_data_provento(self, value: str, field: str) -> str | None:
+        if not value.strip():
+            return None
+        try:
+            return date.fromisoformat(value).isoformat()
+        except ValueError as error:
+            raise XanoAPIError(f"Informe uma data válida para {field}.") from error
+
+    def _limpar_formulario_provento(self):
+        self.bolsa_provento_codigo = ""
+        self.bolsa_provento_valor = ""
+        self.bolsa_provento_quantidade = ""
+        self.bolsa_provento_data_anuncio = ""
+        self.bolsa_provento_data_pagamento = ""
+        self.bolsa_provento_observacoes = ""
+        self.bolsa_provento_tipo = "dividendo"
+        self.bolsa_provento_status = "pago"
+
+    @rx.event
+    async def salvar_provento_bolsa(self):
+        if not self.auth_token:
+            return rx.redirect("/login")
+        self.bolsa_erro = ""
+        try:
+            symbol = self.bolsa_provento_codigo.strip().upper()
+            if not symbol:
+                raise XanoAPIError("Informe o código do ativo.")
+            if self.bolsa_provento_categoria not in {"acao", "fii", "etf"}:
+                raise XanoAPIError("Selecione uma categoria de ativo válida.")
+            if self.bolsa_provento_tipo not in {
+                "dividendo",
+                "jcp",
+                "rendimento_fii",
+                "outro",
+            }:
+                raise XanoAPIError("Selecione um tipo de provento válido.")
+            if self.bolsa_provento_status not in {"anunciado", "pago"}:
+                raise XanoAPIError("Selecione um status válido.")
+
+            payment_date = self._nova_data_provento(
+                self.bolsa_provento_data_pagamento,
+                "pagamento",
+            )
+            announcement_date = self._nova_data_provento(
+                self.bolsa_provento_data_anuncio,
+                "anúncio",
+            )
+            if self.bolsa_provento_status == "pago" and payment_date is None:
+                raise XanoAPIError(
+                    "Informe a data de pagamento para um provento recebido."
+                )
+
+            eligible_quantity = None
+            if self.bolsa_provento_quantidade.strip():
+                try:
+                    eligible_quantity = Decimal(
+                        self.bolsa_provento_quantidade.strip().replace(",", ".")
+                    )
+                except InvalidOperation as error:
+                    raise XanoAPIError(
+                        "Informe uma quantidade elegível válida."
+                    ) from error
+                if not eligible_quantity.is_finite() or eligible_quantity < 0:
+                    raise XanoAPIError(
+                        "A quantidade elegível não pode ser negativa."
+                    )
+
+            saved = _as_record(
+                await self._api(
+                    "POST",
+                    "investimentos/proventos",
+                    {
+                        "ativo_codigo": symbol,
+                        "ativo_categoria": self.bolsa_provento_categoria,
+                        "tipo": self.bolsa_provento_tipo,
+                        "status": self.bolsa_provento_status,
+                        "valor_centavos": _money_to_cents(
+                            self.bolsa_provento_valor
+                        ),
+                        "quantidade_elegivel": (
+                            format(eligible_quantity, "f")
+                            if eligible_quantity is not None
+                            else None
+                        ),
+                        "data_anuncio": announcement_date,
+                        "data_pagamento": payment_date,
+                        "observacoes": (
+                            self.bolsa_provento_observacoes.strip() or None
+                        ),
+                    },
+                )
+            )
+            if not saved.get("id"):
+                raise XanoAPIError("O Xano não confirmou o provento.")
+            await self._carregar_proventos_bolsa()
+            await self._carregar_analise_carteira_bolsa()
+            self._limpar_formulario_provento()
+        except (XanoAPIError, ValueError) as error:
+            self.bolsa_erro = str(error)
+
+    @rx.event
+    def set_bolsa_operacao_codigo(self, value: str):
+        self.bolsa_operacao_codigo = value
+
+    @rx.event
+    def set_bolsa_operacao_categoria(self, value: str):
+        self.bolsa_operacao_categoria = value
+
+    @rx.event
+    def set_bolsa_operacao_tipo(self, value: str):
+        self.bolsa_operacao_tipo = value
+
+    @rx.event
+    def set_bolsa_operacao_data(self, value: str):
+        self.bolsa_operacao_data = value
+
+    @rx.event
+    def set_bolsa_operacao_quantidade(self, value: str):
+        self.bolsa_operacao_quantidade = value
+
+    @rx.event
+    def set_bolsa_operacao_preco(self, value: str):
+        self.bolsa_operacao_preco = value
+
+    @rx.event
+    def set_bolsa_operacao_custos(self, value: str):
+        self.bolsa_operacao_custos = value
+
+    @rx.event
+    def set_bolsa_operacao_observacoes(self, value: str):
+        self.bolsa_operacao_observacoes = value
+
+    @rx.event
+    def editar_operacao_bolsa(self, operation_id: int):
+        record = next(
+            (
+                item
+                for item in self.bolsa_operacoes
+                if item.get("id") == operation_id
+            ),
+            None,
+        )
+        if record is None:
+            self.bolsa_erro = "Operação não encontrada."
+            return
+        self.bolsa_operacao_edicao_id = operation_id
+        self.bolsa_operacao_codigo = str(record["ativo_codigo"])
+        self.bolsa_operacao_categoria = str(record["ativo_categoria"])
+        self.bolsa_operacao_tipo = str(record["tipo"])
+        self.bolsa_operacao_data = str(record["data"])
+        self.bolsa_operacao_quantidade = str(record["quantidade"])
+        self.bolsa_operacao_preco = str(record["preco"]).removeprefix("R$ ").strip()
+        self.bolsa_operacao_custos = str(record["custos"]).removeprefix("R$ ").strip()
+        self.bolsa_operacao_observacoes = str(record["observacoes"])
+        self.bolsa_erro = ""
+
+    @rx.event
+    def cancelar_edicao_operacao_bolsa(self):
+        self._limpar_edicao_operacao_bolsa()
+
+    def _limpar_edicao_operacao_bolsa(self):
+        self.bolsa_operacao_edicao_id = 0
+        self.bolsa_operacao_codigo = ""
+        self.bolsa_operacao_quantidade = ""
+        self.bolsa_operacao_preco = ""
+        self.bolsa_operacao_custos = ""
+        self.bolsa_operacao_observacoes = ""
+
+    def _nova_operacao_bolsa(self) -> InvestmentOperation:
+        symbol = self.bolsa_operacao_codigo.strip().upper()
+        if not symbol:
+            raise XanoAPIError("Informe o código do ativo.")
+        if self.bolsa_operacao_categoria not in {"acao", "fii", "etf"}:
+            raise XanoAPIError("Selecione uma categoria de ativo válida.")
+        if self.bolsa_operacao_tipo not in {"compra", "venda"}:
+            raise XanoAPIError("Selecione compra ou venda.")
+        try:
+            quantity = Decimal(self.bolsa_operacao_quantidade.strip().replace(",", "."))
+            operation_date = date.fromisoformat(self.bolsa_operacao_data)
+        except (InvalidOperation, ValueError) as error:
+            raise XanoAPIError("Informe quantidade e data válidas.") from error
+        return InvestmentOperation(
+            symbol=symbol,
+            operation_type=self.bolsa_operacao_tipo,
+            operation_date=operation_date,
+            quantity=quantity,
+            unit_price_centavos=_money_to_cents(self.bolsa_operacao_preco),
+            costs_centavos=_nonnegative_money_to_cents(
+                self.bolsa_operacao_custos
+            ),
+            operation_id=self.bolsa_operacao_edicao_id,
+        )
+
+    @rx.event
+    async def salvar_operacao_bolsa(self):
+        if not self.auth_token:
+            return rx.redirect("/login")
+        self.bolsa_erro = ""
+        try:
+            operations = [
+                self._investment_operation_from_record(item)
+                for item in _records(await self._api("GET", "investimentos/operacoes"))
+            ]
+            operation = self._nova_operacao_bolsa()
+            validate_operation_mutation(
+                operations,
+                candidate=operation,
+                excluded_operation_id=self.bolsa_operacao_edicao_id or None,
+            )
+            payload = {
+                "ativo_codigo": operation.symbol,
+                "ativo_categoria": self.bolsa_operacao_categoria,
+                "tipo": operation.operation_type,
+                "data": operation.operation_date.isoformat(),
+                "quantidade": format(operation.quantity, "f"),
+                "preco_unitario_centavos": operation.unit_price_centavos,
+                "custos_centavos": operation.costs_centavos,
+                "observacoes": self.bolsa_operacao_observacoes.strip() or None,
+            }
+            if self.bolsa_operacao_edicao_id:
+                saved = _as_record(
+                    await self._api(
+                        "PATCH",
+                        "investimentos/operacoes/"
+                        f"{self.bolsa_operacao_edicao_id}",
+                        payload,
+                    )
+                )
+            else:
+                saved = _as_record(
+                    await self._api("POST", "investimentos/operacoes", payload)
+                )
+            if not saved.get("id"):
+                raise XanoAPIError("O Xano não confirmou a operação.")
+            await self._carregar_operacoes_bolsa()
+            await self._carregar_analise_carteira_bolsa()
+            self._limpar_edicao_operacao_bolsa()
+        except (XanoAPIError, ValueError) as error:
+            self.bolsa_erro = str(error)
+
+    @rx.event
+    async def excluir_operacao_bolsa(self, operation_id: int):
+        if not self.auth_token:
+            return rx.redirect("/login")
+        self.bolsa_erro = ""
+        try:
+            operations = [
+                self._investment_operation_from_record(item)
+                for item in _records(await self._api("GET", "investimentos/operacoes"))
+            ]
+            validate_operation_mutation(
+                operations,
+                excluded_operation_id=operation_id,
+            )
+            await self._api(
+                "DELETE",
+                f"investimentos/operacoes/{operation_id}",
+            )
+            await self._carregar_operacoes_bolsa()
+            await self._carregar_analise_carteira_bolsa()
+            if self.bolsa_operacao_edicao_id == operation_id:
+                self._limpar_edicao_operacao_bolsa()
+        except (XanoAPIError, ValueError) as error:
+            self.bolsa_erro = str(error)
 
     @rx.event
     def sair(self):
@@ -1992,6 +3617,63 @@ class AppState(rx.State):
             self.erro = str(error)
 
     @rx.event
+    def carregar_onboarding(self):
+        self._carregar_onboarding_local()
+
+    @rx.event
+    def atualizar_onboarding(self, chave: str, valor: object):
+        if chave == "objetivos":
+            if not isinstance(valor, list):
+                valor = [valor]
+        self.onboarding_respostas[chave] = valor
+        self._salvar_onboarding_local()
+        if self.onboarding_respostas:
+            self._atualizar_perfil_investidor()
+
+    @rx.event
+    def avancar_onboarding(self):
+        if self.onboarding_etapa < 5:
+            self.onboarding_etapa += 1
+        else:
+            self.onboarding_concluido = True
+        self._salvar_onboarding_local()
+
+    @rx.event
+    def voltar_onboarding(self):
+        if self.onboarding_etapa > 0:
+            self.onboarding_etapa -= 1
+        self._salvar_onboarding_local()
+
+    @rx.event
+    def pular_onboarding(self):
+        if self.onboarding_etapa < 5:
+            self.onboarding_etapa += 1
+        else:
+            self.onboarding_concluido = True
+        self._salvar_onboarding_local()
+
+    @rx.event
+    def finalizar_onboarding(self):
+        self.onboarding_concluido = True
+        self.onboarding_etapa = 5
+        self._atualizar_perfil_investidor()
+        self._salvar_onboarding_local()
+
+    @rx.event
+    def reiniciar_onboarding(self):
+        self.onboarding_respostas = {}
+        self.onboarding_etapa = 0
+        self.onboarding_concluido = False
+        self.investidor_perfil = "Ainda não avaliado"
+        self.investidor_descricao = (
+            "Complete o onboarding para entender melhor o seu perfil de investidor."
+        )
+        self.investidor_pontos_atencao = (
+            "Use a avaliação como referência de contexto para o Jarvis e as metas financeiras."
+        )
+        self._salvar_onboarding_local()
+
+    @rx.event
     def set_assistente_mensagem(self, value: str):
         self.assistente_mensagem = value
 
@@ -2302,6 +3984,41 @@ class AppState(rx.State):
                     mime_type="application/pdf",
                 )
             elif parsed_bill is None:
+                investment_terms = {
+                    "investimento",
+                    "investimentos",
+                    "carteira",
+                    "provento",
+                    "ação",
+                    "acoes",
+                    "ações",
+                    "fii",
+                    "etf",
+                    "cotação",
+                    "cotacao",
+                    "rentabilidade",
+                    "posição",
+                    "posicao",
+                    "comprar",
+                    "vender",
+                }
+                investment_words = set(re.findall(r"\w+", texto.casefold()))
+                investment_context = None
+                if (
+                    getattr(self, "bolsa_ativo_selecionado", "")
+                    or investment_words.intersection(investment_terms)
+                    or any(
+                        phrase in texto.casefold()
+                        for phrase in (
+                            "resultado realizado",
+                            "resultado não realizado",
+                        )
+                    )
+                    or re.search(r"\b[A-Z]{4,5}\d{1,2}\b", texto.upper())
+                ):
+                    investment_context = (
+                        await self._contexto_investimentos_jarvis()
+                    )
                 context_service = FinancialContextService(
                     transactions=self.transacoes,
                     accounts=self.contas,
@@ -2310,6 +4027,7 @@ class AppState(rx.State):
                     budgets=self.orcamentos,
                     goals=self.metas,
                     recurring=self.recorrencias,
+                    investment_context=investment_context,
                 )
                 history = [
                     {

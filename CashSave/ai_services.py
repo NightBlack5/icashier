@@ -2,7 +2,7 @@ import json
 import os
 import re
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin, urlsplit
@@ -64,11 +64,6 @@ _EXPLICIT_BILL_ACTION_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _BILL_NOUN_PATTERN = re.compile(r"\b(?:conta|boleto|fatura)\b", re.IGNORECASE)
-_BILL_LEAD_PATTERN = re.compile(
-    r"^\s*(?:(?:eu\s+)?(?:tenho|tem|há|existe)\s+)?"
-    r"(?:(?:uma|um|a|o)\s+)?",
-    re.IGNORECASE,
-)
 _BILL_PAYMENT_WORDING = re.compile(
     r"\b(?:a\s+pagar|para\s+pagar|pendente|apagar)\b",
     re.IGNORECASE,
@@ -483,40 +478,6 @@ def _clean_transaction_description(text: str) -> str:
     return description.strip(" .,:;-\n")
 
 
-def _transaction_type(normalized: str) -> str | None:
-    if any(
-        phrase in normalized
-        for phrase in (
-            "receita",
-            "recebi",
-            "receber",
-            "salário",
-            "salario",
-            "ganhei",
-            "renda",
-            "entrada",
-        )
-    ):
-        return "receita"
-    if any(
-        phrase in normalized
-        for phrase in (
-            "cadastre",
-            "cadastrar",
-            "registre",
-            "registrar",
-            "lance",
-            "lançar",
-            "lancar",
-            "gastei",
-            "despesa de",
-            "despesa no valor",
-        )
-    ):
-        return "despesa"
-    return None
-
-
 def _parse_brazilian_amount(value: str, scale: str | None) -> Decimal:
     normalized = value
     if "," in normalized and "." in normalized:
@@ -860,6 +821,7 @@ class FinancialContextService:
         budgets: list[dict],
         goals: list[dict],
         recurring: list[dict],
+        investment_context: dict[str, object] | None = None,
     ):
         self.transactions = transactions
         self.accounts = accounts
@@ -868,6 +830,10 @@ class FinancialContextService:
         self.budgets = budgets
         self.goals = goals
         self.recurring = recurring
+        self.investment_context = investment_context or {
+            "status": "indisponivel",
+            "motivo": "Contexto de investimentos não carregado.",
+        }
 
     def build(self, question: str) -> dict[str, object]:
         context = {
@@ -894,6 +860,7 @@ class FinancialContextService:
                 1 for item in self.bills if item.get("status") == "pendente"
             ),
             "recorrencias": len(self.recurring),
+            "investimentos": self.investment_context,
         }
         return context
 
@@ -962,6 +929,14 @@ class FinancialOrchestrator:
             ensure_ascii=False,
             separators=(",", ":"),
         )[: self.settings.max_context_chars]
+        if self._is_investment_question(
+            normalized_question,
+            context_service.investment_context,
+        ):
+            return self._deterministic_investment_answer(
+                normalized_question,
+                context_service,
+            )
         if any(
             phrase in normalized_question
             for phrase in (
@@ -1000,7 +975,9 @@ class FinancialOrchestrator:
                     "algo. Você não possui ferramentas e não pode alterar dados. "
                     "Se a pergunta exigir dados ausentes, diga que eles não "
                     "estão disponíveis. Diferencie fatos observados, cálculos "
-                    "e estimativas. Retorne apenas JSON no formato solicitado."
+                    "e estimativas. Não ofereça recomendação personalizada "
+                    "de compra ou venda nem prometa retorno. Retorne apenas "
+                    "JSON no formato solicitado."
                 ),
             },
             *history[-self.settings.max_history_messages :],
@@ -1011,6 +988,164 @@ class FinancialOrchestrator:
         ]
         raw_response = self.client.chat(messages)
         return validate_ai_response(raw_response, self.settings.max_response_chars)
+
+    @staticmethod
+    def _is_investment_question(
+        question: str,
+        investment_context: dict[str, object],
+    ) -> bool:
+        terms = {
+            "investimento",
+            "investimentos",
+            "carteira",
+            "provento",
+            "ação",
+            "acoes",
+            "ações",
+            "fii",
+            "etf",
+            "cotação",
+            "cotacao",
+            "rentabilidade",
+            "posição",
+            "posicao",
+            "comprar",
+            "compra",
+            "vender",
+            "venda",
+            "adquirir",
+        }
+        words = set(re.findall(r"\w+", question))
+        if words.intersection(terms) or any(
+            phrase in question
+            for phrase in ("resultado realizado", "resultado não realizado")
+        ):
+            return True
+        selected_asset = investment_context.get("ativo_aberto")
+        symbol = (
+            str(selected_asset.get("symbol", "")).casefold()
+            if isinstance(selected_asset, dict)
+            else ""
+        )
+        return bool(symbol and symbol in question)
+
+    @staticmethod
+    def _deterministic_investment_answer(
+        question: str,
+        context_service: FinancialContextService,
+    ) -> dict[str, object]:
+        investment = context_service.investment_context
+        facts: list[str] = []
+        calculations: list[str] = []
+        estimates: list[str] = []
+        if investment.get("status") != "disponivel":
+            facts.append(
+                "Os dados de investimento não estão disponíveis nesta sessão."
+            )
+        else:
+            positions = investment.get("posicoes", [])
+            if isinstance(positions, list) and positions:
+                for position in positions[:8]:
+                    if not isinstance(position, dict):
+                        continue
+                    facts.append(
+                        f"Posição em {position['ativo_codigo']}: "
+                        f"{position['quantidade']} unidades "
+                        f"({position['ativo_categoria']})."
+                    )
+            else:
+                facts.append("Não há posições de investimento abertas.")
+
+            total_cost = investment.get("custo_investido_centavos")
+            realized = investment.get("resultado_realizado_centavos")
+            received = investment.get("proventos_recebidos_centavos")
+            if isinstance(total_cost, int):
+                calculations.append(
+                    f"Custo investido atual: {_money(total_cost)}."
+                )
+            if isinstance(realized, int):
+                calculations.append(
+                    f"Resultado realizado: {_money(realized)}."
+                )
+            if isinstance(received, int):
+                calculations.append(
+                    f"Proventos pagos registrados: {_money(received)}."
+                )
+
+            market_value = investment.get("valor_mercado_centavos")
+            unrealized = investment.get("resultado_nao_realizado_centavos")
+            simple_return = investment.get("rentabilidade_simples_percentual")
+            if isinstance(market_value, int):
+                calculations.append(f"Valor de mercado: {_money(market_value)}.")
+            else:
+                facts.append(
+                    "Valor de mercado e resultado não realizado indisponíveis "
+                    "sem cotações verificadas para todas as posições."
+                )
+            if isinstance(unrealized, int):
+                calculations.append(
+                    f"Resultado não realizado: {_money(unrealized)}."
+                )
+            if isinstance(simple_return, str):
+                calculations.append(
+                    f"Rentabilidade simples: {simple_return}."
+                )
+
+        selected_asset = investment.get("ativo_aberto")
+        if isinstance(selected_asset, dict):
+            facts.append(
+                "Ativo aberto: "
+                f"{selected_asset.get('symbol', 'não informado')}; "
+                f"cotação {selected_asset.get('price', 'indisponível')}; "
+                f"fonte {selected_asset.get('source', 'indisponível')}; "
+                f"referência {selected_asset.get('reference_at', 'indisponível')}; "
+                f"estado {selected_asset.get('freshness', 'indisponível')}."
+            )
+            if selected_asset.get("stale") == "true":
+                estimates.append(
+                    "A cotação do ativo aberto está desatualizada e não deve "
+                    "ser tratada como preço atual."
+                )
+        else:
+            facts.append(
+                "Não há cotação verificada de um ativo aberto nesta conversa."
+            )
+
+        profile = investment.get("perfil_educativo")
+        if isinstance(profile, dict) and profile.get("disponivel") is True:
+            estimates.append(
+                "Contexto educativo local: "
+                f"{profile.get('perfil', 'não informado')}. "
+                f"{profile.get('ponto_atencao', '')} "
+                "Esse perfil não é autorização nem garantia de adequação."
+            )
+        else:
+            estimates.append(
+                "Perfil de investidor indisponível; a informação apresentada "
+                "permanece geral."
+            )
+
+        if any(
+            term in question
+            for term in ("comprar", "compra", "vender", "venda", "devo adquirir")
+        ):
+            answer = (
+                "Não posso indicar uma compra ou venda personalizada. Posso "
+                "explicar os dados disponíveis e os riscos, sem prometer retorno."
+            )
+        else:
+            answer = (
+                "Esta síntese usa somente os registros autenticados e dados "
+                "verificados disponíveis; proventos ficam separados da "
+                "rentabilidade das operações."
+            )
+        return {
+            "answer": answer,
+            "classification": "analise_investimento",
+            "facts": facts,
+            "calculations": calculations,
+            "estimates": estimates,
+        }
 
     @staticmethod
     def _deterministic_financial_answer(
@@ -1025,12 +1160,10 @@ class FinancialOrchestrator:
         ]
         calculations = [f"Saldo calculado: {_money(int(totals['saldo']))}."]
         estimates: list[str] = []
-        top_category = None
         if "categoria" in question or "gasto" in question or "despes" in question:
             categories = context["gastos_por_categoria"]
             if categories:
                 top = categories[0]
-                top_category = top
                 facts.append(
                     "Maior categoria de despesas observada: "
                     f"{top['categoria']} ({_money(int(top['valor_centavos']))})."
@@ -1073,7 +1206,6 @@ class FinancialOrchestrator:
             categories = context["gastos_por_categoria"]
             if categories:
                 top = categories[0]
-                top_category = top
                 category_name = str(top["categoria"]).strip()
                 if category_name and category_name.lower() != "sem categoria":
                     answer_bits = [

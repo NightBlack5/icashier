@@ -14,6 +14,7 @@ EXPECTED_ROUTES = {
     "/app",
     "/assistente",
     "/financas",
+    "/bolsa",
     "/calendario",
     "/perfil",
     "/sobre",
@@ -22,7 +23,14 @@ EXPECTED_ROUTES = {
 }
 
 PUBLIC_ROUTES = {"/", "/login", "/cadastro", "/sobre", "/suporte", "/apoiar"}
-PROTECTED_ROUTES = {"/app", "/assistente", "/financas", "/calendario", "/perfil"}
+PROTECTED_ROUTES = {
+    "/app",
+    "/assistente",
+    "/financas",
+    "/bolsa",
+    "/calendario",
+    "/perfil",
+}
 
 
 class RouteSmokeTests(unittest.TestCase):
